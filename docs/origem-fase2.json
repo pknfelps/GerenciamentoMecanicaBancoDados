@@ -1,0 +1,32 @@
+{
+  "sourceRepository": "https://github.com/pknfelps/GerenciamentoMecanicaSistema",
+  "sourceCommit": "bd40b14eb90818616533b0ea6043973f240cd0c3",
+  "normalization": "UTF-8 sem BOM; LF",
+  "files": [
+    {
+      "source": "deploy/kubernetes/DbEntrypoint/Init.sql",
+      "target": "sql/Init.sql",
+      "sha256": "a5f83ddc1045391f2b52542dcf74c6f2c7039745c45ec533a0479cdad9553abc"
+    },
+    {
+      "source": "deploy/kubernetes/deploy-gerenciamento-db.yaml",
+      "target": "legacy/kubernetes/deploy-gerenciamento-db.yaml",
+      "sha256": "dc861f81bb442d474eabf5c82a42b8273003d1efa03323ee85550472040e30ef"
+    },
+    {
+      "source": "deploy/kubernetes/svc-gerenciamento-db.yaml",
+      "target": "legacy/kubernetes/svc-gerenciamento-db.yaml",
+      "sha256": "b43639beb69c0b6fc02db10349372892f64a520b37fafd63642ef5493d72d750"
+    },
+    {
+      "source": "deploy/kubernetes/pvc-gerenciamento-db.yaml",
+      "target": "legacy/kubernetes/pvc-gerenciamento-db.yaml",
+      "sha256": "b0a72f058cc47320060abe6812a81dca8d4d89e1541549c6168c3a748738e315"
+    },
+    {
+      "source": "deploy/kubernetes/storageclass-ebs-gp3.yaml",
+      "target": "legacy/kubernetes/storageclass-ebs-gp3.yaml",
+      "sha256": "e7291956724cf63b33e2be339f3718e67da10d1ebc56dd232d66178a017c9268"
+    }
+  ]
+}
