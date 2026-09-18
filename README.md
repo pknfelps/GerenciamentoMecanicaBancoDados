@@ -12,15 +12,9 @@ Aurora Serverless v2, Terraform do banco, credenciais de leitura da função, Jo
 
 ## Desenvolvimento local
 
-A aplicação mantém uma cópia versionada de `sql/Init.sql` para seu Docker Compose funcionar sem outro checkout. Alterações devem começar aqui e ser importadas pela aplicação usando um SHA de commit completo:
+O uso principal será a API publicada na AWS. Se precisar de Docker local, prepare manualmente o esquema e os dados do PostgreSQL a partir de `sql/Init.sql`, usando seu cliente SQL e um banco vazio.
 
-```powershell
-# Na raiz do repositório da aplicação:
-./scripts/Sync-DatabaseSnapshot.ps1 -DatabaseRepository ../GerenciamentoMecanicaBancoDados -Commit <SHA-completo>
-./scripts/Sync-DatabaseSnapshot.ps1 -Verify
-```
-
-O manifesto local registra commit/caminho/hash; a pipeline da aplicação verifica a integridade da cópia. Não editar duas fontes de SQL independentemente. O comando de sincronização não executa SQL nem remove dados. A execução completa da API/PostgreSQL/smtp4dev continua no Compose da aplicação.
+A API mantém um Compose opcional para API/PostgreSQL/smtp4dev, mas não armazena cópia do SQL, manifesto de versão ou sincronizador e não monta scripts de inicialização. Inicie o banco, prepare o esquema manualmente e então use a API. A inicialização AWS continua sob responsabilidade deste repositório, pelo Job/pipeline previsto na E2.
 
 ## Referências
 
