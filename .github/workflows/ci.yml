@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  database-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mecanica_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-ephemeral-only
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mecanica_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PGHOST: 127.0.0.1
+      PGDATABASE: mecanica_ci
+      PGUSER: postgres
+      PGPASSWORD: ci-ephemeral-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+      - name: Initialize empty database
+        env:
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
+        run: psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/Init.sql
+      - name: Verify seeds and relational integrity
+        env:
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
+        run: psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
