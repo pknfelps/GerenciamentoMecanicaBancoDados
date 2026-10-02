@@ -111,3 +111,11 @@ O banco não expõe API HTTP. A API da oficina usa leitura/escrita; a função c
 ### Gatilhos de CI
 
 O CI automático valida PRs destinados a develop/main, sem uma segunda execução por push. Novos commits cancelam os checks antigos do mesmo PR; execução manual continua disponível. Os nomes dos jobs/checks foram preservados.
+
+## Evidência de acesso para a base — E2.14
+
+O workflow manual aws-oidc-check, com check_kubernetes=true, agora executa scripts/record_base_access.py. Após autenticar com a role database, confere Jobs, pods/logs e service accounts no namespace default. Se a infraestrutura publicou /mecanica/<ambiente>/base/v1/database-candidate, o script relê o candidato e registra /mecanica/<ambiente>/database/v1/base-access-check (geração, hash, identidade, run e horário). Sem candidato, mantém o diagnóstico e informa que não houve registro SSM.
+
+Executar sequencialmente: ativação da base -> check do banco -> nova ativação completa da base. A evidência vale por até 24 horas e só corresponde à mesma geração/recursos/configuração de acesso. Ela não é release do banco e não provisiona Aurora/esquema. Não executar junto de provisionamento ou destroy da base no mesmo ambiente. Procedimento: [Metadados da base](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/METADADOS_BASE.md).
+
+Teste local sem AWS: python -m unittest discover -s tests -p 'test_*.py' -v. A comprovação no runner continua pendente.
