@@ -92,7 +92,7 @@ O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script
 
 Ready significa Aurora acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. A role do bootstrap não recebe acesso ao bucket de artefatos nem leitura geral de secrets; permissões do Job e do provisionamento ainda precisam ser aplicadas separadamente. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap já concede à role do banco as permissões de provisionamento do Aurora e SG próprio; não concede leitura de valores no Secrets Manager ou PassRole. As permissões do futuro Job e dos consumidores ainda precisam ser configuradas. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 

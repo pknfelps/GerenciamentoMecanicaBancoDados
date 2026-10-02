@@ -7,7 +7,7 @@
 - `environments/hom.tfvars` e `environments/prd.tfvars` fixam o ambiente e a região.
 - `backends/<ambiente>.hcl` usa o bucket compartilhado de estado, mas a chave `<ambiente>/database/terraform.tfstate` isola o banco da base e do outro ambiente. O lock é o arquivo S3 nativo.
 - `base_context_file` aponta ao JSON gerado por `scripts/consume_database_release.py capture` na **mesma execução**. O arquivo é temporário, não versionado e não contém senhas.
-- A role OIDC `mecanica-<ambiente>-database-github` é a identidade permitida pelo consumidor. Ela precisa de permissões de gerenciamento de Aurora/SG aplicadas no bootstrap antes do plano real.
+- A role OIDC `mecanica-<ambiente>-database-github` é a identidade permitida pelo consumidor. As permissões de gerenciamento de Aurora/SG e a service-linked role do RDS foram aplicadas no bootstrap em 2026-10-02. Manter o Terraform correspondente versionado na infraestrutura.
 
 Não aplicar o Terraform contra uma base ausente. Primeiro executar `base-provision` e publicar `database-release` no ambiente escolhido. A release precisa estar `ready`, com perfil `database`; o consumidor confere VPC, subnets, SGs, EKS, Kubernetes e a role real.
 

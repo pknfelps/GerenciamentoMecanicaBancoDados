@@ -1,0 +1,355 @@
+name: database-provision
+run-name: Aurora ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Destino: develop/hom ou main/prd'
+        required: true
+        default: hom
+        type: choice
+        options: [hom, prd]
+      action:
+        description: 'plan: consultar; activate: planejar, aprovar e aplicar'
+        required: true
+        default: plan
+        type: choice
+        options: [plan, activate]
+
+permissions: {}
+
+# Inclui a espera pela aprovação; o check da base usa o mesmo grupo.
+concurrency:
+  group: database-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      CHECKPOINT_DISABLE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.9
+          terraform_wrapper: false
+      - name: Validate consumer and Terraform without AWS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p 'test_*.py' -q
+          terraform -chdir=terraform fmt -check -recursive
+          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform validate -no-color
+          terraform -chdir=terraform test -no-color
+
+  plan:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: ${{ inputs.environment }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      commit: ${{ steps.review.outputs.commit }}
+      fingerprint: ${{ steps.review.outputs.fingerprint }}
+      base_sha256: ${{ steps.review.outputs.base_sha256 }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_ACCOUNT: '121754142617'
+      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
+      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      TF_WORKSPACE: default
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      CHECKPOINT_DISABLE: '1'
+      AWS_PAGER: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate destination and existing variables
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            hom) expected_ref='refs/heads/develop' ;;
+            prd) expected_ref='refs/heads/main' ;;
+            *) echo '::error::Invalid environment'; exit 1 ;;
+          esac
+          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
+          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
+                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ]]; then
+            echo '::error::Repository, branch or AWS variables do not match the selected environment'
+            exit 1
+          fi
+          echo "BASE_CONTEXT=$RUNNER_TEMP/database-base-context.json" >> "$GITHUB_ENV"
+          echo "KUBECONFIG=$RUNNER_TEMP/database-base-kubeconfig" >> "$GITHUB_ENV"
+      - name: Require protected approval environment
+        if: inputs.action == 'activate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="$TARGET_ENVIRONMENT-approval"
+          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
+          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
+            echo "::error::Configure Settings > Environments > $name with Required reviewers"
+            exit 1
+          fi
+          if ! jq -e --arg name "$name" '
+            .name == $name and
+            ([.protection_rules[]? | select(.type == "required_reviewers" and
+              ((.reviewers // []) | length > 0))] | length) == 1
+          ' <<< "$configuration" >/dev/null; then
+            echo "::error::Required reviewers are missing in $name"
+            exit 1
+          fi
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.9
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.1
+      - name: Authenticate database role with OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.CONFIGURED_REGION }}
+          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          allowed-account-ids: '121754142617'
+          audience: sts.amazonaws.com
+          role-session-name: database-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+      - name: Capture ready base and create the plan
+        run: |
+          set -euo pipefail
+          python3 scripts/consume_database_release.py capture \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform init -input=false -lockfile=readonly \
+            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
+          terraform -chdir=terraform plan -input=false -no-color -lock-timeout=60s \
+            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
+            -var="base_context_file=$BASE_CONTEXT" -out="$RUNNER_TEMP/database.tfplan"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform show -json "$RUNNER_TEMP/database.tfplan" > "$RUNNER_TEMP/database.tfplan.json"
+      - name: Review actions and publish a safe fingerprint
+        id: review
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/database.tfplan.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, re, sys
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {
+              "terraform_data.base_release", "aws_db_subnet_group.database",
+              "aws_security_group.aurora", "aws_rds_cluster.database",
+              "aws_rds_cluster_instance.writer",
+          }
+          changes = []
+          for resource in plan.get("resource_changes", []):
+              address = resource["address"]
+              if resource.get("mode") != "managed" or not (
+                  address in allowed or re.fullmatch(
+                      r'aws_vpc_security_group_ingress_rule\.postgres\["sg-[0-9a-f]+"\]', address
+                  )
+              ):
+                  raise SystemExit("Plano contém recurso fora do módulo Aurora.")
+              actions = resource["change"]["actions"]
+              if actions not in (["no-op"], ["create"], ["update"]):
+                  raise SystemExit("Plano destrutivo ou substituição recusados.")
+              if actions != ["no-op"]:
+                  changes.append((address, "/".join(actions)))
+          with open(sys.argv[2], "a", encoding="utf-8") as summary:
+              summary.write("### Plano do Aurora\n\n")
+              summary.write(f"Commit: {__import__('os').environ['GITHUB_SHA']}\n\n")
+              summary.write("| Recurso | Ação |\n| --- | --- |\n")
+              for address, action in changes:
+                  summary.write(f"| {address} | {action} |\n")
+              if not changes:
+                  summary.write("| Nenhuma alteração | no-op |\n")
+              summary.write("\nO plano binário e seus valores permanecem neste runner.\n")
+          PY
+          base_sha256="$(sha256sum "$BASE_CONTEXT" | cut -d' ' -f1)"
+          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift}' \
+            "$RUNNER_TEMP/database.tfplan.json" | sha256sum | cut -d' ' -f1)"
+          fingerprint="$(printf '%s\n' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$base_sha256" "$plan_sha256" \
+            | sha256sum | cut -d' ' -f1)"
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "base_sha256=$base_sha256"
+            echo "fingerprint=$fingerprint"
+          } >> "$GITHUB_OUTPUT"
+          echo "Snapshot SHA-256: $base_sha256. Plano SHA-256: $fingerprint." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ inputs.action }}" == 'plan' ]]; then
+            echo 'Consulta concluída; nenhum apply foi executado.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  approval:
+    needs: plan
+    if: inputs.action == 'activate'
+    name: Aprovar plano do Aurora
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: ${{ inputs.environment == 'prd' && 'prd-approval' || 'hom-approval' }}
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#summary
+    permissions: {}
+    steps:
+      # Sem OIDC, credenciais AWS, estado ou plano binário neste job.
+      - name: Record approval
+        run: echo 'Plano desta execução aprovado; o apply fará novo plan e comparará o fingerprint.'
+
+  apply:
+    needs: [plan, approval]
+    if: inputs.action == 'activate' && needs.plan.result == 'success' && needs.approval.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    environment: ${{ inputs.environment }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_ACCOUNT: '121754142617'
+      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      EXPECTED_COMMIT: ${{ needs.plan.outputs.commit }}
+      APPROVED_FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
+      APPROVED_BASE_SHA256: ${{ needs.plan.outputs.base_sha256 }}
+      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
+      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      TF_WORKSPACE: default
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      CHECKPOINT_DISABLE: '1'
+      AWS_PAGER: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate approved target before AWS authentication
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            hom) expected_ref='refs/heads/develop' ;;
+            prd) expected_ref='refs/heads/main' ;;
+            *) echo '::error::Invalid environment'; exit 1 ;;
+          esac
+          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
+          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
+                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ||
+                "$EXPECTED_COMMIT" != "$GITHUB_SHA" ||
+                ! "$APPROVED_FINGERPRINT" =~ ^[0-9a-f]{64}$ ||
+                ! "$APPROVED_BASE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo '::error::Target, variables or approved plan metadata changed'
+            exit 1
+          fi
+          echo "BASE_CONTEXT=$RUNNER_TEMP/database-base-context.json" >> "$GITHUB_ENV"
+          echo "KUBECONFIG=$RUNNER_TEMP/database-base-kubeconfig" >> "$GITHUB_ENV"
+      - name: Recheck approval protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="$TARGET_ENVIRONMENT-approval"
+          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
+          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
+            echo "::error::Approval environment $name is unavailable"
+            exit 1
+          fi
+          if ! jq -e --arg name "$name" '
+            .name == $name and
+            ([.protection_rules[]? | select(.type == "required_reviewers" and
+              ((.reviewers // []) | length > 0))] | length) == 1
+          ' <<< "$configuration" >/dev/null; then
+            echo "::error::Required reviewers are missing in $name"
+            exit 1
+          fi
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.9
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.1
+      - name: Authenticate database role with fresh OIDC credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.CONFIGURED_REGION }}
+          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          allowed-account-ids: '121754142617'
+          audience: sts.amazonaws.com
+          role-session-name: database-apply-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+      - name: Recapture base, replan and apply only the approved result
+        run: |
+          set -euo pipefail
+          python3 scripts/consume_database_release.py capture \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform init -input=false -lockfile=readonly \
+            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
+          terraform -chdir=terraform plan -input=false -no-color -lock-timeout=60s \
+            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
+            -var="base_context_file=$BASE_CONTEXT" -out="$RUNNER_TEMP/database.tfplan"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform show -json "$RUNNER_TEMP/database.tfplan" > "$RUNNER_TEMP/database.tfplan.json"
+          base_sha256="$(sha256sum "$BASE_CONTEXT" | cut -d' ' -f1)"
+          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift}' \
+            "$RUNNER_TEMP/database.tfplan.json" | sha256sum | cut -d' ' -f1)"
+          fingerprint="$(printf '%s\n' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$base_sha256" "$plan_sha256" \
+            | sha256sum | cut -d' ' -f1)"
+          if [[ "$base_sha256" != "$APPROVED_BASE_SHA256" ||
+                "$fingerprint" != "$APPROVED_FINGERPRINT" ]]; then
+            echo '::error::Base or Terraform plan changed after approval; no apply'
+            exit 1
+          fi
+          # Recheck immediately before the mutation, including the SSM version.
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform apply -input=false -no-color -lock-timeout=60s \
+            "$RUNNER_TEMP/database.tfplan"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          {
+            echo '### Aurora provisionado'
+            echo ''
+            echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
+            echo "Plano aprovado: $fingerprint."
+            echo 'Cluster vazio; esquema, credenciais de aplicação e database/v1/release seguem pendentes.'
+          } >> "$GITHUB_STEP_SUMMARY"
