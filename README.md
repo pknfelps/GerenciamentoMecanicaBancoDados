@@ -6,7 +6,7 @@ Mantém o esquema SQL, os dados de demonstração e a futura infraestrutura/inic
 
 O esquema da Fase 2 está em [sql/Init.sql](sql/Init.sql), transferido sem alteração funcional. O script cria tabelas e seeds em **banco vazio**; não é idempotente nem uma migração incremental.
 
-Aurora PostgreSQL Serverless v2, Terraform do banco, credencial de leitura da função, Job de inicialização e histórico de status ainda serão implementados. O SQL atual não contém status Ativo/Inativo de clientes nem `order_status_history`; as datas antigas de OS ainda fazem parte dele.
+O Terraform do Aurora PostgreSQL Serverless v2 está em [terraform](terraform), com o procedimento em [docs/AURORA_TERRAFORM.md](docs/AURORA_TERRAFORM.md). Credenciais de aplicação/função, Job de inicialização e histórico de status ainda serão implementados. O SQL atual não contém status Ativo/Inativo de clientes nem `order_status_history`; as datas antigas de OS ainda fazem parte dele.
 
 ## Estrutura e tecnologias
 
@@ -31,7 +31,7 @@ flowchart LR
     SECRETS -.-> AUTH
 ```
 
-O diagrama é a arquitetura planejada. Atualmente existe o SQL; a infraestrutura e a automação representadas ainda não foram criadas neste repositório.
+O cluster e a rede estão definidos no Terraform; Job, usuários de aplicação e automação do deploy ainda estão planejados.
 
 ## Execução local opcional
 
@@ -70,7 +70,7 @@ Para repetir o teste manualmente, após preparar um PostgreSQL descartável com 
 psql --host=localhost --port=5432 --username=postgres --dbname=postgres --password --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
 ```
 
-Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; Terraform do banco e deploy permanecem pendentes. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
+Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; o teste Terraform usa provider simulado. Deploy do Aurora permanece pendente. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
 
 Na AWS, a entrega planejada provisionará Aurora e executará um Job de esquema/seeds antes da API/função. Estados, credenciais e referências serão separados por ambiente. O banco educacional será recriado quando necessário; não há migração/backfill de dados nesta fase. A inicialização não será executada a cada início de pod.
 
@@ -78,7 +78,7 @@ O modelo de histórico/status, seus índices e o diagrama ER definitivo serão d
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Aurora, publicadores SSM e Job ainda serão implementados; o SQL legado não comprova o contrato alvo de status/histórico nem possui uma versão formal de esquema publicada.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. O cluster Aurora já está definido em Terraform; publicadores SSM e Job ainda serão implementados. O SQL legado não comprova o contrato alvo de status/histórico nem possui uma versão formal de esquema publicada.
 
 | Interface | Responsabilidade do banco |
 |---|---|
@@ -92,11 +92,11 @@ O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script
 
 Ready significa Aurora acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. A role do bootstrap não recebe acesso ao bucket de artefatos nem leitura geral de secrets; permissões do Job e do provisionamento serão implementadas separadamente. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. A role do bootstrap não recebe acesso ao bucket de artefatos nem leitura geral de secrets; permissões do Job e do provisionamento ainda precisam ser aplicadas separadamente. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 
-Crie branches a partir da `develop` atualizada e abra PRs para `develop`. Promova `develop -> main` ao concluir a entrega. **hom** e **prd** terão bancos, segredos e estados próprios, permitindo coexistência; essa infraestrutura ainda não está implementada.
+Crie branches a partir da `develop` atualizada e abra PRs para `develop`. Promova `develop -> main` ao concluir a entrega. **hom** e **prd** têm configuração e estados próprios no Terraform, permitindo coexistência quando provisionados.
 
 ## APIs e referências
 
