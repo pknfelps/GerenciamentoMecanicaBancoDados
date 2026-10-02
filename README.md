@@ -119,3 +119,14 @@ O workflow manual aws-oidc-check, com check_kubernetes=true, agora executa scrip
 Executar sequencialmente: ativação da base -> check do banco -> nova ativação completa da base. A evidência vale por até 24 horas e só corresponde à mesma geração/recursos/configuração de acesso. Ela não é release do banco e não provisiona Aurora/esquema. Não executar junto de provisionamento ou destroy da base no mesmo ambiente. Procedimento: [Metadados da base](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/METADADOS_BASE.md).
 
 Teste local sem AWS: python -m unittest discover -s tests -p 'test_*.py' -v. A comprovação no runner continua pendente.
+
+## Consumo de database-release — E2.2
+
+O [consumidor](scripts/consume_database_release.py) lê exclusivamente
+`/mecanica/<hom|prd>/base/v1/database-release`, valida o perfil `database` ready
+e confere rede/EKS/SGs e acesso Kubernetes com a role do banco. O
+[workflow manual database-base-check](.github/workflows/database-base-check.yml)
+executa captura e releitura. Não provisiona Aurora nem publica release do banco.
+
+Instalação das permissões de consulta, comandos, formato do snapshot e limites:
+[Consumo da base](docs/CONSUMO_BASE.md).
