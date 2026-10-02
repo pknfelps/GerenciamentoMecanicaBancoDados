@@ -7,6 +7,8 @@
 *.tfplan
 *.tfvars
 !*.tfvars.example
+!/terraform/environments/hom.tfvars
+!/terraform/environments/prd.tfvars
 **/.terraform/
 crash.log
 crash.*.log

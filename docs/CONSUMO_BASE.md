@@ -82,5 +82,6 @@ python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
 Os testes simulam AWS/Kubernetes e incluem hom/prd, contrato incompatível, ausência,
 AccessDenied, permissões insuficientes, rede incompatível e mudanças durante o consumo.
-Não comprovam o ciclo real no runner. Aurora/Terraform do banco, esquema/seeds,
-publicação da release database e integração desses guardas ao deploy seguem na E2.2/E2.5.
+Não comprovam o ciclo real no runner. O módulo Terraform do Aurora foi implementado
+e testado localmente. Deploy, esquema/seeds, publicação da release database e
+integração desses guardas ao deploy seguem na E2.2/E2.5.
