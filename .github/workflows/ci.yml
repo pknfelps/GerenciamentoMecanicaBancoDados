@@ -44,7 +44,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
-      - name: Test base access evidence without AWS
+      - name: Test base release consumer and access evidence without AWS
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Initialize empty database
         env:
