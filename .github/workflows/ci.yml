@@ -1,14 +1,17 @@
 name: ci
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# PRs atualizados substituem seus checks; chamadas de provisionamento usam run_id.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   database-validate:
@@ -41,6 +44,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
+      - name: Test base release consumer and access evidence without AWS
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Initialize empty database
         env:
           PGPORT: ${{ job.services.postgres.ports['5432'] }}

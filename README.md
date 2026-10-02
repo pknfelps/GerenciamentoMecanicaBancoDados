@@ -76,6 +76,24 @@ Na AWS, a entrega planejada provisionará Aurora e executará um Job de esquema/
 
 O modelo de histórico/status, seus índices e o diagrama ER definitivo serão documentados junto da implementação. Consulte a [RFC de dados](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/003-DADOS-E-OBSERVABILIDADE.md) e a [RFC de entrega](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/002-ENTREGA.md).
 
+## Contratos de integração
+
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Aurora, publicadores SSM e Job ainda serão implementados; o SQL legado não comprova o contrato alvo de status/histórico nem possui uma versão formal de esquema publicada.
+
+| Interface | Responsabilidade do banco |
+|---|---|
+| Consome da base | VPC, subnets privadas de banco, cluster/namespace e SGs efetivos de API, função e Job |
+| Provisiona | Aurora e credenciais separadas: administrativa para o Job, leitura/escrita para API e leitura limitada de clientes para a função |
+| Publica em SSM | /mecanica/<ambiente>/database/v1/: cluster-arn, endpoint, port, database-name, security-group-id, ssl-mode, três secret-arns, schema-version, schema-sha256, initialized-at, release e tentativas |
+| Entrega aos consumidores | Endpoint/porta/database, TLS VerifyFull, referência da credencial específica e identidade/compatibilidade do SQL aplicado |
+| Mantém no repositório | SQL, seeds, testes e definição da versão do esquema; não depende de artefatos SQL no bucket compartilhado |
+
+O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script. Ao dividir o esquema, o bundle terá ordem explícita e hash próprio. A primeira versão formal será registrada junto da implementação. API/função declaram compatibilidade com essa versão e não reaplicam o SQL.
+
+Ready significa Aurora acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
+
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. A role do bootstrap não recebe acesso ao bucket de artefatos nem leitura geral de secrets; permissões do Job e do provisionamento serão implementadas separadamente. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+
 ## Desenvolvimento e ambientes
 
 Crie branches a partir da `develop` atualizada e abra PRs para `develop`. Promova `develop -> main` ao concluir a entrega. **hom** e **prd** terão bancos, segredos e estados próprios, permitindo coexistência; essa infraestrutura ainda não está implementada.
@@ -88,3 +106,27 @@ O banco não expõe API HTTP. A API da oficina usa leitura/escrita; a função c
 - [Contrato de autenticação e permissões](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md).
 - [Infraestrutura](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/tree/develop).
 - [Autenticação](https://github.com/pknfelps/GerenciamentoMecanicaAutenticacao/tree/develop).
+
+
+### Gatilhos de CI
+
+O CI automático valida PRs destinados a develop/main, sem uma segunda execução por push. Novos commits cancelam os checks antigos do mesmo PR; execução manual continua disponível. Os nomes dos jobs/checks foram preservados.
+
+## Evidência de acesso para a base — E2.14
+
+O workflow manual aws-oidc-check, com check_kubernetes=true, agora executa scripts/record_base_access.py. Após autenticar com a role database, confere Jobs, pods/logs e service accounts no namespace default. Se a infraestrutura publicou /mecanica/<ambiente>/base/v1/database-candidate, o script relê o candidato e registra /mecanica/<ambiente>/database/v1/base-access-check (geração, hash, identidade, run e horário). Sem candidato, mantém o diagnóstico e informa que não houve registro SSM.
+
+Executar sequencialmente: ativação da base -> check do banco -> nova ativação completa da base. A evidência vale por até 24 horas e só corresponde à mesma geração/recursos/configuração de acesso. Ela não é release do banco e não provisiona Aurora/esquema. Não executar junto de provisionamento ou destroy da base no mesmo ambiente. Procedimento: [Metadados da base](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/METADADOS_BASE.md).
+
+Teste local sem AWS: python -m unittest discover -s tests -p 'test_*.py' -v. A comprovação no runner continua pendente.
+
+## Consumo de database-release — E2.2
+
+O [consumidor](scripts/consume_database_release.py) lê exclusivamente
+`/mecanica/<hom|prd>/base/v1/database-release`, valida o perfil `database` ready
+e confere rede/EKS/SGs e acesso Kubernetes com a role do banco. O
+[workflow manual database-base-check](.github/workflows/database-base-check.yml)
+executa captura e releitura. Não provisiona Aurora nem publica release do banco.
+
+Instalação das permissões de consulta, comandos, formato do snapshot e limites:
+[Consumo da base](docs/CONSUMO_BASE.md).
