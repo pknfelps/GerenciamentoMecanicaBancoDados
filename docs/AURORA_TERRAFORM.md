@@ -1,5 +1,7 @@
 # Aurora por ambiente
 
+> Registro histórico da implementação substituída por RDS PostgreSQL em 2026-10-02. Para o Terraform atual, consulte [RDS_TERRAFORM.md](RDS_TERRAFORM.md). Os comandos e a descrição abaixo não são instruções para um novo deploy.
+
 `terraform/` define um cluster Aurora PostgreSQL 16.15 Serverless v2 Standard por ambiente, com um writer `db.serverless`, 0–2 ACUs e pausa após 300 segundos sem conexões. O cluster usa as duas subnets isoladas publicadas em `base/v1/database-release`, um security group próprio e acesso PostgreSQL 5432 somente dos security groups de API, função e Job publicados pela base. Não há reader, RDS Proxy ou acesso público. A senha administrativa é gerenciada pelo RDS no Secrets Manager; o Terraform expõe apenas o ARN do segredo.
 
 ## Entradas e estado
