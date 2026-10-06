@@ -1,5 +1,5 @@
 name: database-provision
-run-name: Aurora ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
+run-name: RDS PostgreSQL ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -162,12 +162,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 - "$RUNNER_TEMP/database.tfplan.json" "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, re, sys
+          import json, os, re, sys
           plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          prefix = f"mecanica-{os.environ['TARGET_ENVIRONMENT']}"
           allowed = {
               "terraform_data.base_release", "aws_db_subnet_group.database",
-              "aws_security_group.aurora", "aws_rds_cluster.database",
-              "aws_rds_cluster_instance.writer",
+              "aws_security_group.database", "aws_db_instance.database",
           }
           changes = []
           for resource in plan.get("resource_changes", []):
@@ -177,14 +177,48 @@ jobs:
                       r'aws_vpc_security_group_ingress_rule\.postgres\["sg-[0-9a-f]+"\]', address
                   )
               ):
-                  raise SystemExit("Plano contém recurso fora do módulo Aurora.")
+                  raise SystemExit("Plano contém recurso fora do módulo RDS PostgreSQL.")
               actions = resource["change"]["actions"]
               if actions not in (["no-op"], ["create"], ["update"]):
                   raise SystemExit("Plano destrutivo ou substituição recusados.")
               if actions != ["no-op"]:
+                  after = resource["change"].get("after") or {}
+                  if address == "aws_db_instance.database":
+                      expected = {
+                          "identifier": f"{prefix}-postgres",
+                          "engine": "postgres",
+                          "engine_version": "16.15",
+                          "instance_class": "db.t3.micro",
+                          "allocated_storage": 20,
+                          "storage_type": "gp3",
+                          "storage_encrypted": True,
+                          "manage_master_user_password": True,
+                          "publicly_accessible": False,
+                          "multi_az": False,
+                          "db_subnet_group_name": f"{prefix}-database",
+                          "skip_final_snapshot": True,
+                          "deletion_protection": False,
+                      }
+                      if any(after.get(key) != value for key, value in expected.items()):
+                          raise SystemExit("Instância RDS fora da configuração aprovada.")
+                  elif address == "aws_db_subnet_group.database":
+                      if after.get("name") != f"{prefix}-database":
+                          raise SystemExit("Subnet group inesperado.")
+                  elif address == "aws_security_group.database":
+                      if after.get("name") != f"{prefix}-postgres":
+                          raise SystemExit("Security group inesperado.")
+                  elif address.startswith("aws_vpc_security_group_ingress_rule.postgres["):
+                      source = re.fullmatch(
+                          r'aws_vpc_security_group_ingress_rule\.postgres\["(sg-[0-9a-f]+)"\]', address
+                      ).group(1)
+                      if (after.get("referenced_security_group_id") != source or
+                          after.get("from_port") != 5432 or
+                          after.get("to_port") != 5432 or
+                          after.get("ip_protocol") != "tcp"):
+                          raise SystemExit("Regra PostgreSQL inesperada.")
                   changes.append((address, "/".join(actions)))
           with open(sys.argv[2], "a", encoding="utf-8") as summary:
-              summary.write("### Plano do Aurora\n\n")
+              summary.write("### Plano do RDS PostgreSQL\n\n")
               summary.write(f"Commit: {__import__('os').environ['GITHUB_SHA']}\n\n")
               summary.write("| Recurso | Ação |\n| --- | --- |\n")
               for address, action in changes:
@@ -211,7 +245,7 @@ jobs:
   approval:
     needs: plan
     if: inputs.action == 'activate'
-    name: Aprovar plano do Aurora
+    name: Aprovar plano do RDS PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -347,9 +381,9 @@ jobs:
           python3 scripts/consume_database_release.py recheck \
             --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
           {
-            echo '### Aurora provisionado'
+            echo '### RDS PostgreSQL provisionado'
             echo ''
             echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
             echo "Plano aprovado: $fingerprint."
-            echo 'Cluster vazio; esquema, credenciais de aplicação e database/v1/release seguem pendentes.'
+            echo 'Instância vazia; esquema, credenciais de aplicação e database/v1/release seguem pendentes.'
           } >> "$GITHUB_STEP_SUMMARY"

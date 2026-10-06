@@ -1,5 +1,5 @@
 name: database-destroy
-run-name: Descarte Aurora ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
+run-name: Descarte RDS PostgreSQL ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -171,8 +171,7 @@ jobs:
           prefix = f"mecanica-{env}"
           allowed = {
               "terraform_data.base_release", "aws_db_subnet_group.database",
-              "aws_security_group.aurora", "aws_rds_cluster.database",
-              "aws_rds_cluster_instance.writer",
+              "aws_security_group.database", "aws_db_instance.database",
           }
           rule = r'aws_vpc_security_group_ingress_rule\.postgres\["(sg-[0-9a-f]+)"\]'
           def known(address):
@@ -187,13 +186,13 @@ jobs:
           prior = (plan.get("prior_state") or {}).get("values") or {}
           root = prior.get("root_module") or {}
           if root.get("child_modules"):
-              raise SystemExit("Estado contém módulo fora do Aurora.")
+              raise SystemExit("Estado contém módulo fora do RDS PostgreSQL.")
           state = root.get("resources") or []
           state_addresses = set()
           for resource in state:
               address = resource.get("address", "")
               if resource.get("mode") != "managed" or not known(address) or address in state_addresses:
-                  raise SystemExit("Estado contém recurso fora do Aurora.")
+                  raise SystemExit("Estado contém recurso fora do RDS PostgreSQL.")
               state_addresses.add(address)
 
           changes = []
@@ -204,7 +203,7 @@ jobs:
               if (resource.get("mode") != "managed" or resource.get("module_address") or
                   resource.get("previous_address") or not known(address) or
                   address.split(".")[0] != resource.get("type")):
-                  raise SystemExit("Plano contém recurso fora do Aurora.")
+                  raise SystemExit("Plano contém recurso fora do RDS PostgreSQL.")
               change = resource.get("change") or {}
               actions = change.get("actions")
               before = change.get("before")
@@ -228,19 +227,18 @@ jobs:
                   if before.get("name") != f"{prefix}-database":
                       raise SystemExit("Subnet group inesperado.")
               elif kind == "aws_security_group":
-                  if before.get("name") != f"{prefix}-aurora":
+                  if before.get("name") != f"{prefix}-postgres":
                       raise SystemExit("Security group inesperado.")
                   own_group = before.get("id")
-              elif kind == "aws_rds_cluster":
-                  if (before.get("cluster_identifier") != f"{prefix}-aurora" or
-                      before.get("engine") != "aurora-postgresql" or
+              elif kind == "aws_db_instance":
+                  if (before.get("identifier") != f"{prefix}-postgres" or
+                      before.get("engine") != "postgres" or
+                      before.get("db_subnet_group_name") != f"{prefix}-database" or
+                      before.get("publicly_accessible") is not False or
+                      before.get("storage_encrypted") is not True or
                       before.get("skip_final_snapshot") is not True or
                       before.get("deletion_protection") is not False):
-                      raise SystemExit("Cluster inesperado ou descarte não autorizado pela configuração.")
-              elif kind == "aws_rds_cluster_instance":
-                  if (before.get("identifier") != f"{prefix}-aurora-writer" or
-                      before.get("cluster_identifier") != f"{prefix}-aurora"):
-                      raise SystemExit("Writer inesperado.")
+                      raise SystemExit("Instância RDS inesperada ou descarte não autorizado pela configuração.")
               elif kind == "aws_vpc_security_group_ingress_rule":
                   source = re.fullmatch(rule, address).group(1)
                   if before.get("referenced_security_group_id") != source:
@@ -251,11 +249,14 @@ jobs:
               if resource.get("type") == "aws_vpc_security_group_ingress_rule" and resource.get("change", {}).get("actions") == ["delete"]:
                   if resource["change"]["before"].get("security_group_id") != own_group:
                       raise SystemExit("Regra PostgreSQL fora do SG do banco.")
+              if resource.get("type") == "aws_db_instance" and resource.get("change", {}).get("actions") == ["delete"]:
+                  if resource["change"]["before"].get("vpc_security_group_ids") != [own_group]:
+                      raise SystemExit("Instância RDS fora do SG do banco.")
           planned = (plan.get("planned_values") or {}).get("root_module") or {}
           if planned.get("resources") or planned.get("child_modules"):
               raise SystemExit("Plano não deixa o estado do banco vazio.")
           with open(sys.argv[3], "a", encoding="utf-8") as summary:
-              summary.write(f"### Descarte do Aurora {env}\n\nCommit: {os.environ['GITHUB_SHA']}\n\n")
+              summary.write(f"### Descarte do RDS PostgreSQL {env}\n\nCommit: {os.environ['GITHUB_SHA']}\n\n")
               summary.write("| Recurso | Ação |\n| --- | --- |\n")
               for address in changes:
                   summary.write(f"| {address} | delete |\n")
@@ -279,7 +280,7 @@ jobs:
   approval:
     needs: plan
     if: inputs.action == 'destroy'
-    name: Aprovar descarte do Aurora
+    name: Aprovar descarte do RDS PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -437,23 +438,21 @@ jobs:
           expect_absent() {
             local expected="$1"; shift
             if "$@" >/dev/null 2>"$error_file"; then
-              echo '::error::A reserved Aurora resource still exists'; return 1
+              echo '::error::A reserved RDS resource still exists'; return 1
             fi
             if ! grep -Fq "($expected)" "$error_file"; then
-              echo '::error::Unable to verify Aurora resource absence'; return 1
+              echo '::error::Unable to verify RDS resource absence'; return 1
             fi
           }
           prefix="mecanica-$TARGET_ENVIRONMENT"
-          expect_absent DBClusterNotFoundFault aws rds describe-db-clusters \
-            --db-cluster-identifier "$prefix-aurora"
           expect_absent DBInstanceNotFound aws rds describe-db-instances \
-            --db-instance-identifier "$prefix-aurora-writer"
+            --db-instance-identifier "$prefix-postgres"
           expect_absent DBSubnetGroupNotFoundFault aws rds describe-db-subnet-groups \
             --db-subnet-group-name "$prefix-database"
-          groups="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$prefix-aurora" \
+          groups="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$prefix-postgres" \
             --query 'SecurityGroups[].GroupId' --output text)"
           if [[ -n "$groups" ]]; then
-            echo '::error::Aurora security group still exists'
+            echo '::error::RDS security group still exists'
             exit 1
           fi
           if aws ssm get-parameter --name "$parameter" >/dev/null 2>"$error_file"; then
@@ -464,10 +463,10 @@ jobs:
             exit 1
           fi
           {
-            echo '### Aurora descartado'
+            echo '### RDS PostgreSQL descartado'
             echo ''
             echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
             echo "Plano aprovado: $APPROVED_FINGERPRINT."
-            echo 'Estado do banco vazio; cluster, writer, subnet group, SG e release SSM ausentes.'
+            echo 'Estado do banco vazio; instância, subnet group, SG e release SSM ausentes.'
             echo 'Bucket de estado, bootstrap, base e outro ambiente preservados.'
           } >> "$GITHUB_STEP_SUMMARY"
