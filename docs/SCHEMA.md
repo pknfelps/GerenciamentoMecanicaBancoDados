@@ -6,6 +6,13 @@ Executar com `psql -X --set=ON_ERROR_STOP=on --single-transaction --file=sql/Ini
 A versão está definida no cabeçalho do SQL; ainda não há release SSM publicada.
 O hash do esquema continua sendo SHA-256 dos bytes de `sql/Init.sql`.
 
+O Job EKS usa `schema_initialization` como registro operacional: grava
+`1.0.0`, SHA-256 e horário no mesmo commit do esquema/seeds. Essa tabela
+não pertence ao domínio da API e não deve ser escrita pela aplicação. O
+`Init.sql` executado manualmente apenas cria a tabela; o registro é gravado
+pelo Job. Em uma ativação repetida, o Job exige exatamente um registro com
+versão e hash atuais antes de repetir o smoke.
+
 ## Contrato de persistência
 
 - `users.role`: `Admin` ou `Mechanic`. UUIDs identificam os usuários. Seeds

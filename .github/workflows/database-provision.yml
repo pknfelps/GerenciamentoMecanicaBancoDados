@@ -380,10 +380,73 @@ jobs:
             "$RUNNER_TEMP/database.tfplan"
           python3 scripts/consume_database_release.py recheck \
             --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+      - name: Initialize schema in EKS
+        run: |
+          set -euo pipefail
+          prefix="mecanica-$TARGET_ENVIRONMENT"
+          endpoint="$(terraform -chdir=terraform output -raw endpoint)"
+          port="$(terraform -chdir=terraform output -raw port)"
+          database="$(terraform -chdir=terraform output -raw database_name)"
+          secret_arn="$(terraform -chdir=terraform output -raw admin_secret_arn)"
+          rds_secret_arn="$(aws rds describe-db-instances \
+            --db-instance-identifier "$prefix-postgres" \
+            --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)"
+          if [[ ! "$endpoint" =~ ^${prefix}-postgres\.[a-z0-9.-]+\.rds\.amazonaws\.com$ ||
+                "$port" != 5432 || "$database" != mecanica ||
+                ! "$secret_arn" =~ ^arn:aws:secretsmanager:us-east-1:121754142617:secret:rds!db-[A-Za-z0-9-]+$ ||
+                "$secret_arn" != "$rds_secret_arn" ]]; then
+            echo '::error::RDS outputs do not identify the expected environment'
+            exit 1
+          fi
+          ca_file="$RUNNER_TEMP/database-rds-ca.pem"
+          master_file="$RUNNER_TEMP/database-master.json"
+          password_file="$RUNNER_TEMP/database-admin-password"
+          cleanup_resources=false
+          cleanup() {
+            rm -f "$master_file" "$password_file"
+            if [[ "$cleanup_resources" == true ]]; then
+              kubectl -n default delete secret database-init-admin --ignore-not-found=true >/dev/null || true
+              kubectl -n default delete configmap database-init-input --ignore-not-found=true >/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          umask 077
+          curl --fail --silent --show-error --max-time 30 \
+            'https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem' \
+            --output "$ca_file"
+          if [[ "$(wc -c < "$ca_file")" -gt 512000 ]]; then
+            echo '::error::Invalid RDS CA bundle size'; exit 1
+          fi
+          openssl x509 -in "$ca_file" -noout >/dev/null
+          sql_sha256="$(sha256sum sql/Init.sql | cut -d' ' -f1)"
+          aws secretsmanager get-secret-value --secret-id "$secret_arn" \
+            --query SecretString --output text > "$master_file"
+          jq -e '.username == "mecanica_admin" and (.password | type == "string" and length > 0)' \
+            "$master_file" >/dev/null
+          jq -jr '.password' "$master_file" > "$password_file"
+          kubectl -n default delete job database-init --ignore-not-found=true --wait=true
+          kubectl -n default delete secret database-init-admin --ignore-not-found=true
+          kubectl -n default delete configmap database-init-input --ignore-not-found=true
+          cleanup_resources=true
+          kubectl -n default create configmap database-init-input \
+            --from-literal="PGHOST=$endpoint" \
+            --from-literal="SQL_SHA256=$sql_sha256" \
+            --from-file=Init.sql=sql/Init.sql \
+            --from-file=smoke.sql=tests/smoke.sql \
+            --from-file="rds-ca.pem=$ca_file"
+          kubectl -n default create secret generic database-init-admin \
+            --from-file="password=$password_file"
+          rm -f "$master_file" "$password_file"
+          kubectl apply -f k8s/database-init.yaml
+          if ! kubectl -n default wait --for=condition=complete job/database-init --timeout=930s; then
+            kubectl -n default describe job/database-init || true
+            kubectl -n default logs job/database-init --all-containers=true --prefix=true || true
+            exit 1
+          fi
           {
             echo '### RDS PostgreSQL provisionado'
             echo ''
             echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
-            echo "Plano aprovado: $fingerprint."
-            echo 'Instância vazia; esquema, credenciais de aplicação e database/v1/release seguem pendentes.'
+            echo "Plano aprovado: $APPROVED_FINGERPRINT."
+            echo 'Esquema inicializado via Job EKS e smoke test concluído; credenciais de aplicação e database/v1/release seguem pendentes.'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -34,6 +34,10 @@ BEGIN
     IF EXISTS (SELECT 1 FROM orders) OR EXISTS (SELECT 1 FROM order_status_history) THEN
         RAISE EXCEPTION 'Init must not seed demonstration orders or history';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_schema = 'public' AND table_name = 'schema_initialization') THEN
+        RAISE EXCEPTION 'Schema initialization marker table is missing';
+    END IF;
     INSERT INTO customers (id, name, document, phone, email)
     VALUES (orphan_order_id, 'Status fixture', 'TEST-STATUS', '00000000000', 'status@example.invalid');
     IF (SELECT status FROM customers WHERE id = orphan_order_id) <> 'Active' THEN

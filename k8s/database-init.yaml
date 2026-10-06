@@ -1,0 +1,83 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-init
+  namespace: default
+  labels:
+    app.kubernetes.io/name: database-init
+    app.kubernetes.io/part-of: mecanica-database
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: database-init
+        app.kubernetes.io/part-of: mecanica-database
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+      volumes:
+        - name: sql
+          configMap:
+            name: database-init-input
+      containers:
+        - name: initialize
+          image: postgres:16.15
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              trap 'unset PGPASSWORD' EXIT
+              tables="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")"
+              marker="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.schema_initialization') IS NOT NULL")"
+              if [ "$marker" = t ]; then
+                result="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN count(*) = 1 AND min(version) = '$SCHEMA_VERSION' AND min(sha256) = '$SQL_SHA256' THEN 'match' ELSE 'mismatch' END FROM schema_initialization")"
+                if [ "$result" != match ]; then
+                  echo 'Existing schema has a different initialization version or SQL hash' >&2
+                  exit 1
+                fi
+                echo 'Matching schema already initialized'
+              elif [ "$tables" = 0 ]; then
+                echo 'Initializing empty database'
+                psql -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/Init.sql -c "INSERT INTO schema_initialization(version, sha256) VALUES ('$SCHEMA_VERSION', '$SQL_SHA256')"
+              else
+                echo 'Database contains tables without a matching initialization marker' >&2
+                exit 1
+              fi
+              psql -X -v ON_ERROR_STOP=1 -f /sql/smoke.sql
+              echo 'Database initialization and smoke test completed'
+          env:
+            - name: PGHOST
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: PGHOST
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: mecanica
+            - name: PGUSER
+              value: mecanica_admin
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-init-admin
+                  key: password
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /sql/rds-ca.pem
+            - name: SCHEMA_VERSION
+              value: "1.0.0"
+            - name: SQL_SHA256
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: SQL_SHA256
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true

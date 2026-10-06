@@ -70,15 +70,15 @@ Para repetir o teste manualmente, após preparar um PostgreSQL descartável com 
 psql --host=localhost --port=5432 --username=postgres --dbname=postgres --password --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
 ```
 
-Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; o teste Terraform usa provider simulado. IAM e workflows RDS já foram adaptados; inicialização SQL pela pipeline ainda depende do Job. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
+Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; o teste Terraform usa provider simulado. O workflow de provisionamento executa o Job SQL após o apply do RDS. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
 
-Na AWS, a entrega planejada provisionará RDS PostgreSQL e executará um Job de esquema/seeds antes da API/função. Estados, credenciais e referências serão separados por ambiente. O banco educacional será recriado quando necessário; não há migração/backfill de dados nesta fase. A inicialização não será executada a cada início de pod.
+Na AWS, `database-provision` provisiona RDS PostgreSQL e executa o Job EKS definido em [k8s/database-init.yaml](k8s/database-init.yaml) antes da API/função. O workflow busca a senha administrativa do Secrets Manager em arquivo temporário, cria uma Secret Kubernetes temporária e a remove após o Job; o container PostgreSQL conecta com TLS `verify-full`, aplica SQL em transação única e executa o smoke. A tabela `schema_initialization` registra versão e SHA-256 dos bytes do `Init.sql`; uma nova ativação com o mesmo hash repete apenas o smoke. Banco com tabelas sem registro ou hash diferente falha sem executar migração. Consulte [RDS Terraform](docs/RDS_TERRAFORM.md).
 
 O modelo de histórico/status e seus índices estão documentados em [SCHEMA.md](docs/SCHEMA.md); as consultas e a persistência da API ainda serão adaptadas. Consulte a [RFC de dados](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/003-DADOS-E-OBSERVABILIDADE.md) e a [RFC de entrega](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/002-ENTREGA.md).
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. A instância RDS está definida em Terraform; publicadores SSM e Job ainda serão implementados. O SQL 1.0.0 define status/histórico, mas nenhuma release do banco foi publicada; a prontidão requer inicialização, credenciais e verificações integradas.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Instância RDS e Job estão definidos; os publicadores SSM ainda serão implementados. Nenhuma release do banco foi publicada; a prontidão ainda requer credenciais limitadas e verificações integradas.
 
 | Interface | Responsabilidade do banco |
 |---|---|
@@ -88,11 +88,11 @@ A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSis
 | Entrega aos consumidores | Endpoint/porta/database, TLS VerifyFull, referência da credencial específica e identidade/compatibilidade do SQL aplicado |
 | Mantém no repositório | SQL, seeds, testes e definição da versão do esquema; não depende de artefatos SQL no bucket compartilhado |
 
-O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script. Ao dividir o esquema, o bundle terá ordem explícita e hash próprio. A primeira versão formal será registrada junto da implementação. API/função declaram compatibilidade com essa versão e não reaplicam o SQL.
+O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script. Ao dividir o esquema, o bundle terá ordem explícita e hash próprio. A versão operacional atual é `1.0.0`, gravada pelo Job no banco. API/função deverão declarar compatibilidade e não reaplicar o SQL.
 
 Ready significa RDS acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap já concede permissões RDS e de preparação do segredo gerenciado às roles database hom/prd, conferidas em 06/10/2026. As permissões do futuro Job e dos consumidores ainda precisam ser configuradas. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap concede à pipeline do banco `GetSecretValue` apenas para segredos mestres gerenciados pelo RDS na conta/região; o workflow confere que o ARN retornado por Terraform corresponde ao da instância RDS selecionada. Essa nova permissão precisa ser aplicada antes de executar o workflow atualizado. Permissões dos consumidores continuam pendentes. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 

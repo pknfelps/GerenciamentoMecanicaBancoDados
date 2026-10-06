@@ -64,6 +64,15 @@ CREATE TABLE order_status_history
     reason          VARCHAR(30)
 );
 
+-- The Job records the applied source hash in the same transaction as this SQL.
+-- The API does not write this table. A repeated run can verify compatibility.
+CREATE TABLE schema_initialization
+(
+    version        VARCHAR(20) NOT NULL,
+    sha256         CHAR(64) NOT NULL,
+    initialized_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE stock
 (
     id              UUID PRIMARY KEY,
