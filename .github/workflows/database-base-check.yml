@@ -1,6 +1,6 @@
 name: database-base-check
 
-# Read-only consumption of the ready base. No Aurora/SQL deployment.
+# Read-only consumption of the ready base. No RDS/SQL deployment.
 on:
   workflow_dispatch:
     inputs:
@@ -110,6 +110,6 @@ jobs:
             echo ""
             echo "Ambiente: $TARGET_ENVIRONMENT. Perfil: database."
             echo "Snapshot, recursos e acesso da role database conferidos; releitura aprovada."
-            echo "Nenhum Aurora, esquema ou release do banco foi implantado."
+            echo "Nenhum RDS, esquema ou release do banco foi implantado."
             echo "Executar operações do mesmo ambiente sequencialmente entre repositórios."
           } >> "$GITHUB_STEP_SUMMARY"

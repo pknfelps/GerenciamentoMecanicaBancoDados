@@ -6,7 +6,7 @@ Mantém o esquema SQL, os dados de demonstração e a futura infraestrutura/inic
 
 O esquema da Fase 2 está em [sql/Init.sql](sql/Init.sql), transferido sem alteração funcional. O script cria tabelas e seeds em **banco vazio**; não é idempotente nem uma migração incremental.
 
-O Terraform do Aurora PostgreSQL Serverless v2 está em [terraform](terraform), com o procedimento em [docs/AURORA_TERRAFORM.md](docs/AURORA_TERRAFORM.md). Credenciais de aplicação/função, Job de inicialização e histórico de status ainda serão implementados. O SQL atual não contém status Ativo/Inativo de clientes nem `order_status_history`; as datas antigas de OS ainda fazem parte dele.
+O Terraform da instância RDS PostgreSQL `db.t3.micro` está em [terraform](terraform), com o escopo e as pendências em [docs/RDS_TERRAFORM.md](docs/RDS_TERRAFORM.md). O bootstrap IAM e os workflows de provisionamento/descarte ainda usam Aurora e precisam ser adaptados antes de qualquer novo deploy. Credenciais de aplicação/função, Job de inicialização e histórico de status ainda serão implementados. O SQL atual não contém status Ativo/Inativo de clientes nem `order_status_history`; as datas antigas de OS ainda fazem parte dele.
 
 ## Estrutura e tecnologias
 
@@ -22,16 +22,16 @@ As tabelas atuais são `users`, `customers`, `vehicles`, `orders`, `stock`, `cat
 
 ```mermaid
 flowchart LR
-    PIPE["Pipeline do banco"] --> AURORA[("Aurora PostgreSQL Serverless v2")]
+    PIPE["Pipeline do banco"] --> RDS[("RDS PostgreSQL db.t3.micro")]
     PIPE --> JOB["Job de esquema e seeds"]
-    JOB --> AURORA
-    API["API no EKS: leitura e escrita"] --> AURORA
-    AUTH["Lambda: leitura limitada de clientes"] --> AURORA
+    JOB --> RDS
+    API["API no EKS: leitura e escrita"] --> RDS
+    AUTH["Lambda: leitura limitada de clientes"] --> RDS
     SECRETS["Secrets Manager por ambiente"] -.-> API
     SECRETS -.-> AUTH
 ```
 
-O cluster e a rede estão definidos no Terraform; Job, usuários de aplicação e automação do deploy ainda estão planejados.
+A instância e a rede estão definidas no Terraform; Job, usuários de aplicação e automação RDS do deploy ainda estão planejados.
 
 ## Execução local opcional
 
@@ -70,29 +70,29 @@ Para repetir o teste manualmente, após preparar um PostgreSQL descartável com 
 psql --host=localhost --port=5432 --username=postgres --dbname=postgres --password --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
 ```
 
-Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; o teste Terraform usa provider simulado. Deploy do Aurora permanece pendente. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
+Após publicar o workflow e confirmar a primeira execução, configurar `database-validate` como check obrigatório no ruleset. Não há acesso ao banco da aplicação ou à AWS nesse CI; o teste Terraform usa provider simulado. Deploy do RDS depende da adaptação de IAM e workflows. Os testes de persistência da aplicação continuam preparando suas próprias tabelas e não substituem a execução do SQL completo aqui.
 
-Na AWS, a entrega planejada provisionará Aurora e executará um Job de esquema/seeds antes da API/função. Estados, credenciais e referências serão separados por ambiente. O banco educacional será recriado quando necessário; não há migração/backfill de dados nesta fase. A inicialização não será executada a cada início de pod.
+Na AWS, a entrega planejada provisionará RDS PostgreSQL e executará um Job de esquema/seeds antes da API/função. Estados, credenciais e referências serão separados por ambiente. O banco educacional será recriado quando necessário; não há migração/backfill de dados nesta fase. A inicialização não será executada a cada início de pod.
 
 O modelo de histórico/status, seus índices e o diagrama ER definitivo serão documentados junto da implementação. Consulte a [RFC de dados](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/003-DADOS-E-OBSERVABILIDADE.md) e a [RFC de entrega](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/002-ENTREGA.md).
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. O cluster Aurora já está definido em Terraform; publicadores SSM e Job ainda serão implementados. O SQL legado não comprova o contrato alvo de status/histórico nem possui uma versão formal de esquema publicada.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. A instância RDS está definida em Terraform; publicadores SSM e Job ainda serão implementados. O SQL legado não comprova o contrato alvo de status/histórico nem possui uma versão formal de esquema publicada.
 
 | Interface | Responsabilidade do banco |
 |---|---|
 | Consome da base | VPC, subnets privadas de banco, cluster/namespace e SGs efetivos de API, função e Job |
-| Provisiona | Aurora e credenciais separadas: administrativa para o Job, leitura/escrita para API e leitura limitada de clientes para a função |
-| Publica em SSM | /mecanica/<ambiente>/database/v1/: cluster-arn, endpoint, port, database-name, security-group-id, ssl-mode, três secret-arns, schema-version, schema-sha256, initialized-at, release e tentativas |
+| Provisiona | RDS PostgreSQL e credenciais separadas: administrativa para o Job, leitura/escrita para API e leitura limitada de clientes para a função |
+| Publica em SSM | /mecanica/<ambiente>/database/v1/: instance-arn, endpoint, port, database-name, security-group-id, ssl-mode, três secret-arns, schema-version, schema-sha256, initialized-at, release e tentativas |
 | Entrega aos consumidores | Endpoint/porta/database, TLS VerifyFull, referência da credencial específica e identidade/compatibilidade do SQL aplicado |
 | Mantém no repositório | SQL, seeds, testes e definição da versão do esquema; não depende de artefatos SQL no bucket compartilhado |
 
 O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script. Ao dividir o esquema, o bundle terá ordem explícita e hash próprio. A primeira versão formal será registrada junto da implementação. API/função declaram compatibilidade com essa versão e não reaplicam o SQL.
 
-Ready significa Aurora acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
+Ready significa RDS acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap já concede à role do banco as permissões de provisionamento do Aurora e SG próprio; não concede leitura de valores no Secrets Manager ou PassRole. As permissões do futuro Job e dos consumidores ainda precisam ser configuradas. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap ainda concede à role do banco permissões orientadas ao Aurora; a revisão para RDS e Secret gerenciado é a próxima etapa. As permissões do futuro Job e dos consumidores ainda precisam ser configuradas. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 
@@ -116,7 +116,7 @@ O CI automático valida PRs destinados a develop/main, sem uma segunda execuçã
 
 O workflow manual aws-oidc-check, com check_kubernetes=true, agora executa scripts/record_base_access.py. Após autenticar com a role database, confere Jobs, pods/logs e service accounts no namespace default. Se a infraestrutura publicou /mecanica/<ambiente>/base/v1/database-candidate, o script relê o candidato e registra /mecanica/<ambiente>/database/v1/base-access-check (geração, hash, identidade, run e horário). Sem candidato, mantém o diagnóstico e informa que não houve registro SSM.
 
-Executar sequencialmente: ativação da base -> check do banco -> nova ativação completa da base. A evidência vale por até 24 horas e só corresponde à mesma geração/recursos/configuração de acesso. Ela não é release do banco e não provisiona Aurora/esquema. Não executar junto de provisionamento ou destroy da base no mesmo ambiente. Procedimento: [Metadados da base](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/METADADOS_BASE.md).
+Executar sequencialmente: ativação da base -> check do banco -> nova ativação completa da base. A evidência vale por até 24 horas e só corresponde à mesma geração/recursos/configuração de acesso. Ela não é release do banco e não provisiona RDS/esquema. Não executar junto de provisionamento ou destroy da base no mesmo ambiente. Procedimento: [Metadados da base](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/METADADOS_BASE.md).
 
 Teste local sem AWS: python -m unittest discover -s tests -p 'test_*.py' -v. A comprovação no runner continua pendente.
 
@@ -126,7 +126,7 @@ O [consumidor](scripts/consume_database_release.py) lê exclusivamente
 `/mecanica/<hom|prd>/base/v1/database-release`, valida o perfil `database` ready
 e confere rede/EKS/SGs e acesso Kubernetes com a role do banco. O
 [workflow manual database-base-check](.github/workflows/database-base-check.yml)
-executa captura e releitura. Não provisiona Aurora nem publica release do banco.
+executa captura e releitura. Não provisiona RDS nem publica release do banco.
 
 Instalação das permissões de consulta, comandos, formato do snapshot e limites:
 [Consumo da base](docs/CONSUMO_BASE.md).

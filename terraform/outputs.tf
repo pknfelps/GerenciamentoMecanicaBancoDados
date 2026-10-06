@@ -1,28 +1,28 @@
-output "cluster_arn" {
-  description = "Identidade publica do cluster Aurora."
-  value       = aws_rds_cluster.database.arn
+output "instance_arn" {
+  description = "Identidade da instância RDS PostgreSQL."
+  value       = aws_db_instance.database.arn
 }
 
-output "writer_endpoint" {
-  description = "Endpoint privado do writer, sem credenciais."
-  value       = aws_rds_cluster.database.endpoint
+output "endpoint" {
+  description = "Hostname privado da instância, sem porta ou credenciais."
+  value       = aws_db_instance.database.address
 }
 
 output "port" {
-  value = aws_rds_cluster.database.port
+  value = aws_db_instance.database.port
 }
 
 output "database_name" {
-  value = aws_rds_cluster.database.database_name
+  value = aws_db_instance.database.db_name
 }
 
 output "security_group_id" {
-  value = aws_security_group.aurora.id
+  value = aws_security_group.database.id
 }
 
 output "admin_secret_arn" {
   description = "Referencia ao segredo gerenciado pelo RDS; o valor nao entra no Terraform."
-  value       = aws_rds_cluster.database.master_user_secret[0].secret_arn
+  value       = aws_db_instance.database.master_user_secret[0].secret_arn
 }
 
 output "base_dependency" {
