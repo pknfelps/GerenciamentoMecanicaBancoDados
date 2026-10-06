@@ -13,7 +13,7 @@ O banco é educacional e descartável: backup por um dia, sem proteção contra 
 
 ## Próximas dependências
 
-O usuário concluiu a limpeza do apply parcial Aurora em hom. Em 2026-10-05, consultas `DescribeDBInstances`, `DescribeDBClusters`, `DescribeDBSubnetGroups` e `DescribeSecurityGroups` não encontraram recursos de banco ou SG reservado com prefixo hom; o estado Terraform S3 não foi lido nesta revisão. O bootstrap IAM da infraestrutura e `database-provision.yml`/`database-destroy.yml` ainda são orientados a Aurora. **Não disparar provisionamento RDS com esses workflows.** Primeiro revisar/aplicar IAM e adaptar seus planos, allowlists, aprovações e verificações de ausência para `aws_db_instance` e o SG novo.
+IAM e workflows RDS estão adaptados (infraestrutura ea3bdf8; banco 145ae28 integrado em 5b8edcf). O mantenedor confirmou provisionamento e destroy com sucesso em 06/10/2026. Não há necessidade de refazer a migração Aurora. O esquema da Fase 3 está em [SCHEMA.md](SCHEMA.md), com Init.sql e smoke atualizados; a API antiga ainda precisa de adaptação.
 
 Depois do apply aprovado, a instância vazia ainda não é uma release pronta. Faltam Job SQL/seeds, usuários limitados da API/função, conexão TLS `VerifyFull`, smoke SQL e publicação de `database/v1/release`. Medir CPU, memória e conexões do micro com probes/HPA e concorrência da função.
 
