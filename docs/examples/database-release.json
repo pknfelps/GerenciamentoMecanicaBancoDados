@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1.1.0",
+  "environment": "hom",
+  "component": "database",
+  "accountId": "121754142617",
+  "region": "us-east-1",
+  "deploymentId": "456-1-database",
+  "generation": "88b99473-a7b0-4bf6-9e8d-3593135a12b4",
+  "source": {
+    "repository": "pknfelps/GerenciamentoMecanicaBancoDados",
+    "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "status": "ready",
+  "recordedAt": "2026-01-02T00:00:00Z",
+  "exports": {
+    "instance-arn": "arn:aws:rds:us-east-1:121754142617:db:mecanica-hom-postgres",
+    "endpoint": "mecanica-hom-postgres.example123.us-east-1.rds.amazonaws.com",
+    "port": 5432,
+    "database-name": "mecanica",
+    "security-group-id": "sg-11111111",
+    "ssl-mode": "VerifyFull",
+    "api-secret-arn": "arn:aws:secretsmanager:us-east-1:121754142617:secret:/mecanica/hom/database/api-AbCd12",
+    "auth-secret-arn": "arn:aws:secretsmanager:us-east-1:121754142617:secret:/mecanica/hom/database/auth-EfGh34",
+    "admin-secret-arn": "arn:aws:secretsmanager:us-east-1:121754142617:secret:rds!db-11111111-1111-4111-8111-111111111111-AbCd12",
+    "schema-version": "1.0.0",
+    "schema-sha256": "1ed84724b11e36f64249d78b7eca338229901ea433715dad7724bb17d42e3863",
+    "initialized-at": "2026-01-01T12:00:00.123456Z"
+  },
+  "dependencies": {
+    "base": {
+      "parameter": "/mecanica/hom/base/v1/database-release",
+      "deploymentId": "123-1-base",
+      "generation": "88b99473-a7b0-4bf6-9e8d-3593135a12b4",
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "artifacts": [],
+  "compatibility": {},
+  "verification": [
+    "api-login-permissions",
+    "auth-login-permissions",
+    "rds-private",
+    "schema-seeds",
+    "tls-verify-full",
+    "initialization-job-complete"
+  ]
+}

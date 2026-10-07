@@ -78,7 +78,7 @@ O modelo de histórico/status e seus índices estão documentados em [SCHEMA.md]
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Instância RDS e Job estão definidos; os publicadores SSM ainda serão implementados. Nenhuma release do banco foi publicada; a prontidão ainda requer credenciais limitadas e verificações integradas.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Instância RDS, Job e credenciais foram validados em hom. A montagem local do manifesto está definida em [manifests/database-release.jq](manifests/database-release.jq), com [entradas e uso documentados](docs/MANIFESTO_BANCO.md). Coleta dos dados, integração aos workflows e publicação/invalidação completa no SSM ainda serão implementadas. Nenhuma release do banco foi publicada por esse montador.
 
 | Interface | Responsabilidade do banco |
 |---|---|
@@ -92,7 +92,7 @@ O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script
 
 Ready significa RDS acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap concede à pipeline do banco leitura do segredo mestre gerenciado pelo RDS do próprio ambiente, conferido pela tag AWS da instância, e criação/leitura das credenciais específicas da API e autenticação. Cada policy de consumidor restringe caminho, conta, região e tags. O Job e a credencial da API foram confirmados em hom pelo mantenedor em 07/10/2026; a policy `database-auth-secret` foi aplicada em 07/10/2026 e a validação real da credencial de autenticação continua pendente. As permissões de leitura dos Secrets pelos runtimes serão configuradas na integração de API/Lambda. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap concede à pipeline do banco leitura do segredo mestre gerenciado pelo RDS do próprio ambiente, conferido pela tag AWS da instância, e criação/leitura das credenciais específicas da API e autenticação. Cada policy de consumidor restringe caminho, conta, região e tags. O Job e a credencial da API foram confirmados em hom pelo mantenedor em 07/10/2026; a policy `database-auth-secret` foi aplicada em 07/10/2026 e a validação real da credencial de autenticação foi confirmada em hom pelo Job e pela conferência adicional em 07/10/2026. As permissões de leitura dos Secrets pelos runtimes serão configuradas na integração de API/Lambda. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 
