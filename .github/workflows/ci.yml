@@ -76,3 +76,11 @@ jobs:
         env:
           PGPORT: ${{ job.services.postgres.ports['5432'] }}
         run: psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
+      - name: Create and verify restricted API user
+        env:
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
+          API_DB_PASSWORD: ci-ephemeral-api-password-123456789
+        run: |
+          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionApiUser.sql
+          PGUSER=mecanica_api PGPASSWORD="$API_DB_PASSWORD" \
+            psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/api-user-smoke.sql

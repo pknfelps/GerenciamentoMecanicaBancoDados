@@ -92,7 +92,7 @@ O SHA-256 corresponde aos bytes de sql/Init.sql enquanto houver um único script
 
 Ready significa RDS acessível, esquema/seeds inicializados, credenciais/permissões verificadas e testes SQL aprovados. Falha do Job impede publicação de release pronta. Se o banco não estiver vazio, não executar o script de inicialização como migração; recriação educacional é uma operação explícita.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap concede à pipeline do banco `GetSecretValue` apenas para segredos mestres gerenciados pelo RDS na conta/região; o workflow confere que o ARN retornado por Terraform corresponde ao da instância RDS selecionada. Essa nova permissão precisa ser aplicada antes de executar o workflow atualizado. Permissões dos consumidores continuam pendentes. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role database por ambiente. Entradas: AWS_REGION, AWS_ROLE_ARN e TF_STATE_BUCKET. O bootstrap concede à pipeline do banco `GetSecretValue` apenas para o segredo mestre gerenciado pelo RDS da instância PostgreSQL do próprio ambiente, conferida pela tag AWS da instância; o workflow confere que o ARN retornado por Terraform corresponde ao da instância RDS selecionada. Essa permissão foi aplicada no bootstrap em 06/10/2026; uma nova execução do Job ainda precisa ser validada em hom. Permissões dos consumidores continuam pendentes. Descarte deste componente não remove bootstrap, base ou banco do outro ambiente.
 
 ## Desenvolvimento e ambientes
 
