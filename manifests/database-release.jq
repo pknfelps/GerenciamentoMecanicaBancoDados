@@ -85,7 +85,8 @@ require(type == "object" and
 | require(($job.metadata.creationTimestamp | utc_epoch) <= $completed and
     ($job.metadata.creationTimestamp | utc_epoch) <= ($job.status.startTime | utc_epoch) and
     ($job.status.startTime | utc_epoch) <= $completed and
-    $initialized <= $completed and $completed <= $recorded; "JOB_TIMESTAMP_MISMATCH")
+    # Kubernetes Job timestamps have second precision; the SQL marker has microseconds.
+    ($initialized | floor) <= $completed and $completed <= $recorded; "JOB_TIMESTAMP_MISMATCH")
 | ["api-login-permissions", "auth-login-permissions", "rds-private", "schema-seeds", "tls-verify-full"] as $checks
 | require((.verification | type) == "array" and (.verification | sort) == $checks;
     "MISSING_VERIFICATION")

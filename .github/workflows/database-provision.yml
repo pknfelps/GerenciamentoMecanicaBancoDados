@@ -381,6 +381,7 @@ jobs:
           python3 scripts/consume_database_release.py recheck \
             --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
       - name: Initialize schema in EKS
+        id: initialize
         run: |
           set -euo pipefail
           prefix="mecanica-$TARGET_ENVIRONMENT"
@@ -497,6 +498,7 @@ jobs:
             --from-file=Init.sql=sql/Init.sql \
             --from-file=ProvisionApiUser.sql=sql/ProvisionApiUser.sql \
             --from-file=ProvisionAuthUser.sql=sql/ProvisionAuthUser.sql \
+            --from-file=ReadInitialization.sql=sql/ReadInitialization.sql \
             --from-file=smoke.sql=tests/smoke.sql \
             --from-file=api-user-smoke.sql=tests/api-user-smoke.sql \
             --from-file=auth-user-smoke.sql=tests/auth-user-smoke.sql \
@@ -509,12 +511,18 @@ jobs:
             --from-file="password=$auth_password_file"
           rm -f "$master_file" "$password_file" "$api_secret_file" "$api_password_file"
           rm -f "$auth_secret_file" "$auth_password_file"
-          kubectl apply -f k8s/database-init.yaml
+          kubectl apply -f k8s/database-init.yaml -o json > "$RUNNER_TEMP/database-init-created.json"
+          job_uid="$(jq -er '.metadata.uid' "$RUNNER_TEMP/database-init-created.json")"
           if ! kubectl -n default wait --for=condition=complete job/database-init --timeout=930s; then
             kubectl -n default describe job/database-init || true
             kubectl -n default logs job/database-init --all-containers=true --prefix=true || true
             exit 1
           fi
+          {
+            echo "job_uid=$job_uid"
+            echo "api_secret_arn=$api_secret_arn"
+            echo "auth_secret_arn=$auth_secret_arn"
+          } >> "$GITHUB_OUTPUT"
           {
             echo '### RDS PostgreSQL provisionado'
             echo ''
@@ -522,3 +530,79 @@ jobs:
             echo "Plano aprovado: $APPROVED_FINGERPRINT."
             echo 'Esquema e usuários PostgreSQL da API e autenticação validados via Job EKS; database/v1/release segue pendente.'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Assemble verified database manifest
+        env:
+          INITIALIZATION_JOB_UID: ${{ steps.initialize.outputs.job_uid }}
+          API_SECRET_ARN: ${{ steps.initialize.outputs.api_secret_arn }}
+          AUTH_SECRET_ARN: ${{ steps.initialize.outputs.auth_secret_arn }}
+        run: |
+          set -euo pipefail
+          umask 077
+          manifest="$RUNNER_TEMP/database-release.json"
+          rm -f "$manifest" "$manifest.tmp"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          terraform -chdir=terraform output -json > "$RUNNER_TEMP/database-outputs.json"
+          aws rds describe-db-instances --db-instance-identifier "mecanica-$TARGET_ENVIRONMENT-postgres" \
+            --query 'DBInstances[0].{arn:DBInstanceArn,endpoint:Endpoint.Address,port:Endpoint.Port,database:DBName,status:DBInstanceStatus,public:PubliclyAccessible,groups:VpcSecurityGroups,adminSecret:MasterUserSecret.SecretArn,engine:Engine,vpc:DBSubnetGroup.VpcId}' \
+            --output json > "$RUNNER_TEMP/database-instance.json"
+          jq -e --slurpfile outputs "$RUNNER_TEMP/database-outputs.json" --slurpfile base "$BASE_CONTEXT" '
+            .status == "available" and .public == false and .engine == "postgres" and
+            .arn == $outputs[0].instance_arn.value and
+            .endpoint == $outputs[0].endpoint.value and .port == $outputs[0].port.value and
+            .database == $outputs[0].database_name.value and
+            .vpc == $base[0].manifest.exports["vpc-id"] and
+            .adminSecret == $outputs[0].admin_secret_arn.value and
+            (.groups | length) == 1 and .groups[0].Status == "active" and
+            .groups[0].VpcSecurityGroupId == $outputs[0].security_group_id.value
+          ' "$RUNNER_TEMP/database-instance.json" >/dev/null
+          kubectl -n default get job database-init -o json > "$RUNNER_TEMP/database-init-completed.json"
+          jq -e --arg uid "$INITIALIZATION_JOB_UID" '
+            ($uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+            .metadata.uid == $uid
+          ' "$RUNNER_TEMP/database-init-completed.json" >/dev/null
+          kubectl -n default get pods -l "batch.kubernetes.io/controller-uid=$INITIALIZATION_JOB_UID" \
+            -o json > "$RUNNER_TEMP/database-init-pods.json"
+          jq -ce --arg uid "$INITIALIZATION_JOB_UID" '
+            if (.items | length) != 1 then error("UNEXPECTED_INITIALIZATION_PODS") else .items[0] end
+            | if .metadata.namespace != "default" or .status.phase != "Succeeded" or
+                 ([.metadata.ownerReferences[]? | select(.kind == "Job" and .controller == true and .uid == $uid)] | length) != 1
+              then error("INITIALIZATION_POD_MISMATCH") else . end
+            | if ([.spec.containers[]? | select(.name == "initialize") | .env[]? |
+                   select(.name == "PGSSLMODE" and .value == "verify-full")] | length) != 1
+              then error("TLS_VERIFICATION_MISSING") else . end
+            | [.status.containerStatuses[]? | select(.name == "initialize")]
+            | if length != 1 or .[0].state.terminated.exitCode != 0
+              then error("INITIALIZATION_CONTAINER_FAILED") else .[0].state.terminated.message | fromjson end
+          ' "$RUNNER_TEMP/database-init-pods.json" > "$RUNNER_TEMP/database-schema-marker.json"
+          recorded_at="$(date -u +'%Y-%m-%dT%H:%M:%S.%NZ')"
+          sql_sha256="$(sha256sum sql/Init.sql | cut -d' ' -f1)"
+          jq -n --slurpfile base "$BASE_CONTEXT" --slurpfile outputs "$RUNNER_TEMP/database-outputs.json" \
+            --slurpfile job "$RUNNER_TEMP/database-init-completed.json" --slurpfile schema "$RUNNER_TEMP/database-schema-marker.json" \
+            --arg environment "$TARGET_ENVIRONMENT" --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg recordedAt "$recorded_at" --arg apiSecretArn "$API_SECRET_ARN" --arg authSecretArn "$AUTH_SECRET_ARN" '
+            {execution: {environment: $environment, repository: $repository, commit: $commit,
+                         runId: $runId, runAttempt: $runAttempt, recordedAt: $recordedAt},
+             baseContext: $base[0], outputs: $outputs[0], job: $job[0], schema: $schema[0],
+             credentials: {apiSecretArn: $apiSecretArn, authSecretArn: $authSecretArn},
+             verification: ["rds-private", "tls-verify-full", "schema-seeds", "api-login-permissions", "auth-login-permissions"]}
+          ' > "$RUNNER_TEMP/database-manifest-input.json"
+          jq -cej --arg schema_version '1.0.0' --arg sql_sha256 "$sql_sha256" \
+            -f manifests/database-release.jq "$RUNNER_TEMP/database-manifest-input.json" > "$manifest.tmp"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          mv "$manifest.tmp" "$manifest"
+          {
+            echo '### Manifesto do banco gerado'
+            echo ''
+            echo 'JSON validado após o Job, sem valores de credenciais; disponível no artefato desta execução.'
+            echo 'Publicação no SSM, tentativas e invalidação no provisionamento ainda pendentes.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload database manifest for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-manifest-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/database-release.json
+          if-no-files-found: error
+          retention-days: 7

@@ -27,6 +27,8 @@ spec:
       containers:
         - name: initialize
           image: postgres:16.15
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
           command: ["/bin/sh", "-ec"]
           args:
             - |
@@ -54,6 +56,7 @@ spec:
               psql -q -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/ProvisionAuthUser.sql
               PGUSER=mecanica_auth PGPASSWORD="$AUTH_DB_PASSWORD" \
                 psql -q -X -v ON_ERROR_STOP=1 -f /sql/auth-user-smoke.sql
+              psql -q -X -A -t -v ON_ERROR_STOP=1 -f /sql/ReadInitialization.sql > /dev/termination-log
               echo 'Database initialization, API/authentication roles and smoke tests completed'
           env:
             - name: PGHOST

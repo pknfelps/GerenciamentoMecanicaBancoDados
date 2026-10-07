@@ -104,7 +104,7 @@ class ManifestTests(unittest.TestCase):
             ("failed Job", ("job", "status", "failed"), 1),
             ("active Job", ("job", "status", "active"), 1),
             ("missing completion", ("job", "status", "conditions"), []),
-            ("Job precedes initialization", ("job", "status", "completionTime"), "2026-01-01T12:00:00Z"),
+            ("Job precedes initialization", ("job", "status", "completionTime"), "2026-01-01T11:59:59Z"),
             ("Job after manifest", ("job", "status", "completionTime"), "2026-01-03T00:00:00Z"),
             ("wrong namespace", ("job", "metadata", "namespace"), "other"),
             ("invalid Job UID", ("job", "metadata", "uid"), "-" * 36),
@@ -143,6 +143,13 @@ class ManifestTests(unittest.TestCase):
         result = self.assemble(value)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("never-export-this-synthetic-value", result.stdout)
+
+    def test_sql_microseconds_with_job_completion_in_same_second(self):
+        value = example_input()
+        value["job"]["status"]["completionTime"] = "2026-01-01T12:00:00Z"
+        result = self.assemble(value)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["exports"]["initialized-at"], value["schema"][0]["initialized_at"])
 
 
 if __name__ == "__main__":

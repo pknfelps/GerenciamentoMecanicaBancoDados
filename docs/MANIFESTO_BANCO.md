@@ -2,11 +2,11 @@
 
 O formato segue as seções 4.2 e 7 do [contrato central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md). A definição de montagem está em [manifests/database-release.jq](../manifests/database-release.jq). Ela recebe JSON local, valida os dados e gera o manifesto compacto. Não chama AWS, não consulta senhas e não publica parâmetros.
 
-Este bloco implementa somente a montagem. A coleta das entradas, a integração com provision/destroy, os registros de tentativas e a escrita/verificação no SSM serão implementados em seguida. Gerar um arquivo local com `status: ready` não comprova uma publicação nem substitui os checks reais.
+A montagem e a coleta das entradas estão integradas ao `database-provision`, após o Job. O resultado é disponibilizado como artefato da execução para revisão. Registros de tentativas, protocolo de invalidação no provisionamento, escrita/verificação SSM e limpeza dos campos no destroy permanecem pendentes. Gerar um arquivo local com `status: ready` não comprova uma publicação nem substitui os checks reais.
 
 ## Entradas
 
-Um arquivo JSON reúne exclusivamente as sete propriedades abaixo. A futura integração deve coletá-las após os checks do banco, na mesma execução que criou e validou o Job.
+Um arquivo JSON reúne exclusivamente as sete propriedades abaixo. O workflow coleta essas entradas após os checks do banco, na mesma execução que criou e validou o Job.
 
 | Propriedade | Origem e conteúdo |
 |---|---|
@@ -20,7 +20,7 @@ Um arquivo JSON reúne exclusivamente as sete propriedades abaixo. A futura inte
 
 O montador verifica formato, ambiente/conta/região, referências, coerência da geração e revisão da base, conclusão do Job e compatibilidade do marcador SQL. Não repete consultas aos recursos reais. O chamador continua responsável pela validação completa da base, origem dos dados/checks, vínculo do Job com a execução atual e nova conferência da dependência antes de publicar.
 
-O registro do schema pode ser obtido pelo administrador dentro do Job com uma consulta de leitura, sem alterar o `Init.sql`:
+O registro do schema é obtido pelo administrador dentro do Job com [sql/ReadInitialization.sql](../sql/ReadInitialization.sql), sem alterar o `Init.sql`:
 
 ```sql
 SELECT COALESCE(json_agg(json_build_object(
@@ -32,7 +32,7 @@ SELECT COALESCE(json_agg(json_build_object(
 FROM public.schema_initialization;
 ```
 
-Essa coleta ainda precisa ser integrada ao Job. `initialized-at` preserva a data registrada no banco; repetir as verificações não a substitui pela data do novo Job. `recordedAt` registra a montagem da release atual.
+Depois dos smokes, o Job grava esse JSON em `/dev/termination-log`, com `terminationMessagePolicy: File`. O workflow lê somente a mensagem do container `initialize` encerrado com código 0. Esse mecanismo é descrito na [documentação Kubernetes](https://kubernetes.io/docs/tasks/debug/debug-application/determine-reason-pod-failure/). A mensagem contém apenas versão/hash/data do SQL. O workflow registra o UID retornado na criação do Job, compara com o Job concluído e seleciona o pod pelo UID do controller; não reutiliza evidência de outra execução. `initialized-at` preserva a data registrada no banco; repetir as verificações não a substitui pela data do novo Job. `recordedAt` registra a montagem da release atual.
 
 ## Montagem local
 
@@ -47,6 +47,8 @@ jq -cej --arg schema_version '1.0.0' --arg sql_sha256 "$sql_sha256" \
 
 O comando não deve ser usado para publicar um arquivo anterior se a montagem falhar. A opção `-j` evita o byte extra de quebra de linha. O montador limita o JSON UTF-8 compacto a 4096 bytes, conforme o contrato Standard.
 
+Os timestamps do Job têm precisão de segundos; o marcador SQL mantém microssegundos. A comparação com a conclusão do Job considera essa diferença, sem alterar o timestamp exportado. O workflow registra `recordedAt` com fração de segundo.
+
 O manifesto usa `schemaVersion: 1.1.0`, inclui o caminho explícito `base/v1/database-release` em `dependencies` e reutiliza sua geração. A versão do SQL é separada: `exports.schema-version: 1.0.0`. A porta é um inteiro, TLS é `VerifyFull` e os três Secrets aparecem somente como ARNs. `artifacts` e `compatibility` ficam vazios neste bloco: não existe bundle SQL publicado no S3 nem consumo de pacote/HTTP pelo banco. A identidade do SQL é seu SHA-256 e o commit do produtor.
 
 Os 12 exports são: `instance-arn`, `endpoint`, `port`, `database-name`, `security-group-id`, `ssl-mode`, `api-secret-arn`, `auth-secret-arn`, `admin-secret-arn`, `schema-version`, `schema-sha256`, `initialized-at`. A futura publicação grava os campos individuais e, por último, o manifesto em `/mecanica/<hom|prd>/database/v1/release`.
@@ -54,9 +56,15 @@ Os 12 exports são: `instance-arn`, `endpoint`, `port`, `database-name`, `securi
 ## Verificação sem AWS
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_database_manifest.py' -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Requer `jq` no PATH, como no runner Ubuntu; alternativamente, informar seu caminho em `JQ_BIN`. A descoberta de testes já existente no CI inclui este teste, sem mudança no workflow. Os testes usam recursos sintéticos e verificam hom/prd, geração/dependência, tipos, datas, hash/versão SQL, falhas do Job, checks ausentes, limite de tamanho e prevenção de exportação de senhas.
+Requer `jq` no PATH, como no runner Ubuntu; alternativamente, informar seu caminho em `JQ_BIN`. Os testes do fluxo também exigem Bash; alternativamente, informar seu caminho em `BASH_BIN`. A descoberta de testes já existente no CI inclui estes testes, sem mudança no workflow de CI. Os testes usam recursos sintéticos e verificam hom/prd, geração/dependência, tipos, datas, hash/versão SQL, falhas do Job, checks ausentes, limite de tamanho e prevenção de exportação de senhas.
+
+## Integração no provisionamento
+
+Depois de `Initialize schema in EKS`, a etapa `Assemble verified database manifest` confere RDS disponível/privado, VPC, SG ativo, endpoint, porta, database e ARN administrativo contra os outputs e a base capturada. Confere também o UID do Job, pod proprietário, saída do container e configuração TLS. Revalida a release da base antes da coleta e depois da montagem; qualquer divergência impede a geração do arquivo final.
+
+O artefato `database-manifest-<ambiente>-<runId>-<runAttempt>` contém somente `database-release.json`, com retenção de sete dias. Não inclui inputs completos, estado/plano Terraform, senhas ou logs de pod. A ação `plan` não executa essa etapa. A publicação SSM ainda não existe: o resumo do workflow explicita essa pendência.
 
 O [exemplo de saída](examples/database-release.json) usa identificadores sintéticos e não representa uma release pronta na AWS. Não utilizá-lo como entrada de consumidores nem publicá-lo no SSM.

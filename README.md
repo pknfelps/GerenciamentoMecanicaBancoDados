@@ -78,7 +78,7 @@ O modelo de histórico/status e seus índices estão documentados em [SCHEMA.md]
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Instância RDS, Job e credenciais foram validados em hom. A montagem local do manifesto está definida em [manifests/database-release.jq](manifests/database-release.jq), com [entradas e uso documentados](docs/MANIFESTO_BANCO.md). Coleta dos dados, integração aos workflows e publicação/invalidação completa no SSM ainda serão implementadas. Nenhuma release do banco foi publicada por esse montador.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) detalha a interface do produtor **database**. Instância RDS, Job e credenciais foram validados em hom. A montagem local do manifesto está definida em [manifests/database-release.jq](manifests/database-release.jq), com [entradas e uso documentados](docs/MANIFESTO_BANCO.md). A coleta dos dados e a geração estão integradas ao `database-provision` após o Job, com JSON disponível como artefato para revisão. Publicação/invalidação completa no SSM e tentativas ainda serão implementadas. Nenhuma release do banco foi publicada por esse montador.
 
 | Interface | Responsabilidade do banco |
 |---|---|
