@@ -30,7 +30,7 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              trap 'unset PGPASSWORD API_DB_PASSWORD' EXIT
+              trap 'unset PGPASSWORD API_DB_PASSWORD AUTH_DB_PASSWORD' EXIT
               tables="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")"
               marker="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.schema_initialization') IS NOT NULL")"
               if [ "$marker" = t ]; then
@@ -51,7 +51,10 @@ spec:
               psql -q -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/ProvisionApiUser.sql
               PGUSER=mecanica_api PGPASSWORD="$API_DB_PASSWORD" \
                 psql -q -X -v ON_ERROR_STOP=1 -f /sql/api-user-smoke.sql
-              echo 'Database initialization, API role and smoke tests completed'
+              psql -q -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/ProvisionAuthUser.sql
+              PGUSER=mecanica_auth PGPASSWORD="$AUTH_DB_PASSWORD" \
+                psql -q -X -v ON_ERROR_STOP=1 -f /sql/auth-user-smoke.sql
+              echo 'Database initialization, API/authentication roles and smoke tests completed'
           env:
             - name: PGHOST
               valueFrom:
@@ -73,6 +76,11 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: database-init-api
+                  key: password
+            - name: AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-init-auth
                   key: password
             - name: PGSSLMODE
               value: verify-full

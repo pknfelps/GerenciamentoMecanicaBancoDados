@@ -56,8 +56,8 @@ jobs:
     env:
       PGHOST: 127.0.0.1
       PGDATABASE: mecanica_ci
-      PGUSER: postgres
-      PGPASSWORD: ci-ephemeral-only
+      PGUSER: mecanica_admin
+      PGPASSWORD: ci-ephemeral-admin-only
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +68,16 @@ jobs:
           sudo apt-get install --yes postgresql-client
       - name: Test base release consumer and access evidence without AWS
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Prepare administrator without SUPERUSER
+        env:
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
+          PGUSER: postgres
+          PGPASSWORD: ci-ephemeral-only
+        run: |
+          psql --no-psqlrc --set=ON_ERROR_STOP=on \
+            --command="CREATE ROLE mecanica_admin LOGIN CREATEDB CREATEROLE PASSWORD 'ci-ephemeral-admin-only'"
+          psql --no-psqlrc --set=ON_ERROR_STOP=on \
+            --command="ALTER DATABASE mecanica_ci OWNER TO mecanica_admin"
       - name: Initialize empty database
         env:
           PGPORT: ${{ job.services.postgres.ports['5432'] }}
@@ -84,3 +94,12 @@ jobs:
           psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionApiUser.sql
           PGUSER=mecanica_api PGPASSWORD="$API_DB_PASSWORD" \
             psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/api-user-smoke.sql
+      - name: Create and verify read-only authentication user
+        env:
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
+          AUTH_DB_PASSWORD: ci-ephemeral-auth-password-123456789
+        run: |
+          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionAuthUser.sql
+          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionAuthUser.sql
+          PGUSER=mecanica_auth PGPASSWORD="$AUTH_DB_PASSWORD" \
+            psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/auth-user-smoke.sql
