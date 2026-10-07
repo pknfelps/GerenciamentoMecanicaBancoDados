@@ -376,6 +376,9 @@ jobs:
           # Recheck immediately before the mutation, including the SSM version.
           python3 scripts/consume_database_release.py recheck \
             --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          bash scripts/database_metadata.sh begin-provision "$BASE_CONTEXT"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
           terraform -chdir=terraform apply -input=false -no-color -lock-timeout=60s \
             "$RUNNER_TEMP/database.tfplan"
           python3 scripts/consume_database_release.py recheck \
@@ -528,7 +531,7 @@ jobs:
             echo ''
             echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
             echo "Plano aprovado: $APPROVED_FINGERPRINT."
-            echo 'Esquema e usuários PostgreSQL da API e autenticação validados via Job EKS; database/v1/release segue pendente.'
+            echo 'Esquema e usuários PostgreSQL da API e autenticação validados via Job EKS; manifesto será montado e publicado em seguida.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Assemble verified database manifest
         env:
@@ -597,7 +600,7 @@ jobs:
             echo '### Manifesto do banco gerado'
             echo ''
             echo 'JSON validado após o Job, sem valores de credenciais; disponível no artefato desta execução.'
-            echo 'Publicação no SSM, tentativas e invalidação no provisionamento ainda pendentes.'
+            echo 'A etapa seguinte publica os campos e a release no SSM e confere as gravações.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload database manifest for review
         uses: actions/upload-artifact@v4
@@ -606,3 +609,20 @@ jobs:
           path: ${{ runner.temp }}/database-release.json
           if-no-files-found: error
           retention-days: 7
+      - name: Publish database metadata in SSM
+        run: |
+          set -euo pipefail
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          bash scripts/database_metadata.sh publish "$RUNNER_TEMP/database-release.json"
+          python3 scripts/consume_database_release.py recheck \
+            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
+          {
+            echo '### Release do banco publicada'
+            echo ''
+            echo "SSM: /mecanica/$TARGET_ENVIRONMENT/database/v1/release"
+            echo 'Campos, tentativa ready e manifesto gravados e conferidos; dependência da base revalidada.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Invalidate readiness and record a failed operation
+        if: ${{ always() && (failure() || cancelled()) }}
+        run: bash scripts/database_metadata.sh failed
