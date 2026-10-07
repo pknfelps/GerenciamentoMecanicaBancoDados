@@ -7,8 +7,25 @@ SELECT 'CREATE ROLE mecanica_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREA
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mecanica_api')
 \gexec
 
+-- Existing roles must already be unprivileged; ALTER ROLE cannot reset these
+-- attributes on RDS because mecanica_admin is not a PostgreSQL superuser.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = 'mecanica_api'
+          AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+    ) OR EXISTS (
+        SELECT 1 FROM pg_auth_members m
+        JOIN pg_roles r ON r.oid = m.member
+        WHERE r.rolname = 'mecanica_api'
+    ) THEN
+        RAISE EXCEPTION 'Existing API role has administrative privileges';
+    END IF;
+END $$;
+
 SELECT format(
-    'ALTER ROLE mecanica_api WITH LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    'ALTER ROLE mecanica_api WITH LOGIN NOINHERIT PASSWORD %L',
     :'api_password'
 )
 \gexec
