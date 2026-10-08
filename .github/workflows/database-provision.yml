@@ -10,10 +10,6 @@ on:
         default: hom
         type: choice
         options: [hom, prd]
-      adopt_existing_credentials:
-        description: 'Primeira adocao de secrets existentes: preservar suas senhas'
-        type: boolean
-        default: false
 
 permissions: {}
 concurrency:
@@ -28,7 +24,6 @@ env:
   TF_INPUT: 'false'
   TF_WORKSPACE: default
   CHECKPOINT_DISABLE: '1'
-  TF_VAR_adopt_existing_credentials: ${{ inputs.adopt_existing_credentials || false }}
 
 jobs:
   plan:
