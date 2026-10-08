@@ -20,10 +20,3 @@ variable "aws_region" {
     error_message = "O projeto exige us-east-1."
   }
 }
-
-variable "adopt_existing_credentials" {
-  description = "Somente na primeira migracao: importa metadados e preserva as senhas existentes."
-  type        = bool
-  default     = false
-  nullable    = false
-}

@@ -2,28 +2,10 @@ locals {
   application_users = { api = "mecanica_api", auth = "mecanica_auth" }
 }
 
-# A adocao importa apenas metadados. Nunca importar versoes com valores comuns.
-data "aws_secretsmanager_secret" "existing" {
-  for_each = var.adopt_existing_credentials ? local.application_users : {}
-  name     = "/mecanica/${var.environment}/database/${each.key}"
-}
-
-import {
-  for_each = var.adopt_existing_credentials ? local.application_users : {}
-  to       = aws_secretsmanager_secret.application[each.key]
-  id       = data.aws_secretsmanager_secret.existing[each.key].arn
-}
-
 resource "aws_secretsmanager_secret" "application" {
   for_each                = local.application_users
   name                    = "/mecanica/${var.environment}/database/${each.key}"
   recovery_window_in_days = 0
-}
-
-ephemeral "aws_secretsmanager_secret_version" "existing" {
-  for_each      = var.adopt_existing_credentials ? local.application_users : {}
-  secret_id     = data.aws_secretsmanager_secret.existing[each.key].arn
-  version_stage = "AWSCURRENT"
 }
 
 ephemeral "random_password" "application" {
@@ -39,8 +21,8 @@ resource "aws_secretsmanager_secret_version" "application" {
   for_each                 = local.application_users
   secret_id                = aws_secretsmanager_secret.application[each.key].id
   secret_string_wo_version = 1
-  # A revisao fixa evita rotacao em cada execucao; na adocao copia AWSCURRENT.
-  secret_string_wo = var.adopt_existing_credentials ? ephemeral.aws_secretsmanager_secret_version.existing[each.key].secret_string : jsonencode({
+  # A revisao fixa preserva a versao existente e evita rotacao em cada execucao.
+  secret_string_wo = jsonencode({
     engine   = "postgres"
     host     = aws_db_instance.database.address
     port     = aws_db_instance.database.port
