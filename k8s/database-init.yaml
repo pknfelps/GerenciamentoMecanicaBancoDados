@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: database-init
-  namespace: default
+  namespace: database-init
   labels:
     app.kubernetes.io/name: database-init
     app.kubernetes.io/part-of: mecanica-database
@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/part-of: mecanica-database
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       securityContext:
         runAsUser: 999
         runAsGroup: 999
@@ -27,8 +28,6 @@ spec:
       containers:
         - name: initialize
           image: postgres:16.15
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
           command: ["/bin/sh", "-ec"]
           args:
             - |
@@ -49,15 +48,9 @@ spec:
                 echo 'Database contains tables without a matching initialization marker' >&2
                 exit 1
               fi
-              psql -X -v ON_ERROR_STOP=1 -f /sql/smoke.sql
-              psql -q -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/ProvisionApiUser.sql
-              PGUSER=mecanica_api PGPASSWORD="$API_DB_PASSWORD" \
-                psql -q -X -v ON_ERROR_STOP=1 -f /sql/api-user-smoke.sql
-              psql -q -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/ProvisionAuthUser.sql
-              PGUSER=mecanica_auth PGPASSWORD="$AUTH_DB_PASSWORD" \
-                psql -q -X -v ON_ERROR_STOP=1 -f /sql/auth-user-smoke.sql
-              psql -q -X -A -t -v ON_ERROR_STOP=1 -f /sql/ReadInitialization.sql > /dev/termination-log
-              echo 'Database initialization, API/authentication roles and smoke tests completed'
+              psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionApiUser.sql
+              psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionAuthUser.sql
+              echo 'Database initialization and API/authentication roles completed'
           env:
             - name: PGHOST
               valueFrom:

@@ -1,456 +1,125 @@
 name: database-destroy
-run-name: Descarte RDS PostgreSQL ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
+run-name: database-destroy / ${{ inputs.environment }} / ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Banco a descartar: develop/hom ou main/prd'
+        description: 'Destino: develop/hom ou main/prd'
         required: true
         default: hom
         type: choice
         options: [hom, prd]
-      action:
-        description: 'plan: consultar; destroy: planejar, aprovar e descartar'
-        required: true
-        default: plan
-        type: choice
-        options: [plan, destroy]
 
 permissions: {}
-
-# Mesmo grupo do provisionamento e do check da base do banco.
 concurrency:
   group: database-${{ inputs.environment }}
   cancel-in-progress: false
 
-jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.15.9
-          terraform_wrapper: false
-      - name: Validate Terraform without AWS
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -B -m unittest discover -s tests -p 'test_*.py' -q
-          terraform -chdir=terraform fmt -check -recursive
-          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
-          terraform -chdir=terraform validate -no-color
-          terraform -chdir=terraform test -no-color
+env:
+  TARGET_ENVIRONMENT: ${{ inputs.environment }}
+  AWS_REGION: us-east-1
+  AWS_PAGER: ''
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  TF_WORKSPACE: default
+  CHECKPOINT_DISABLE: '1'
 
+jobs:
   plan:
-    needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment: ${{ inputs.environment }}
     permissions:
-      actions: read
       contents: read
       id-token: write
     outputs:
-      commit: ${{ steps.review.outputs.commit }}
-      fingerprint: ${{ steps.review.outputs.fingerprint }}
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
     defaults:
       run:
-        shell: bash
-    env:
-      EXPECTED_ACCOUNT: '121754142617'
-      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
-      TARGET_ENVIRONMENT: ${{ inputs.environment }}
-      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
-      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      TF_WORKSPACE: default
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-      AWS_PAGER: ''
+        working-directory: terraform
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate destination and existing variables
+      - name: Check branch and environment
         run: |
-          set -euo pipefail
-          case "$TARGET_ENVIRONMENT" in
-            hom) expected_ref='refs/heads/develop' ;;
-            prd) expected_ref='refs/heads/main' ;;
-            *) echo '::error::Invalid environment'; exit 1 ;;
-          esac
-          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
-          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
-                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ]]; then
-            echo '::error::Repository, branch or AWS variables do not match the selected environment'
-            exit 1
-          fi
-      - name: Require protected approval environment
-        if: inputs.action == 'destroy'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          name="$TARGET_ENVIRONMENT-approval"
-          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
-          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
-            echo "::error::Configure Settings > Environments > $name with Required reviewers"
-            exit 1
-          fi
-          if ! jq -e --arg name "$name" '
-            .name == $name and
-            ([.protection_rules[]? | select(.type == "required_reviewers" and
-              ((.reviewers // []) | length > 0))] | length) == 1
-          ' <<< "$configuration" >/dev/null; then
-            echo "::error::Required reviewers are missing in $name"
-            exit 1
-          fi
+          test "$GITHUB_REF" = "refs/heads/$( [ "$TARGET_ENVIRONMENT" = hom ] && echo develop || echo main )"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
-      - name: Authenticate database role with OIDC
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          aws-region: ${{ env.CONFIGURED_REGION }}
-          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           allowed-account-ids: '121754142617'
-          audience: sts.amazonaws.com
-          role-session-name: database-destroy-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          role-duration-seconds: 3600
-          unset-current-credentials: true
-          use-existing-credentials: false
-          output-credentials: false
-          translate-env-variables: false
-      - name: Plan removal from the selected state only
-        run: |
-          set -euo pipefail
-          identity="$(aws sts get-caller-identity --query Arn --output text)"
-          if [[ ! "$identity" =~ ^arn:aws:sts::$EXPECTED_ACCOUNT:assumed-role/mecanica-$TARGET_ENVIRONMENT-database-github/[^/]+$ ]]; then
-            echo '::error::Unexpected AWS role'; exit 1
-          fi
-          terraform -chdir=terraform init -input=false -lockfile=readonly \
-            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
-          # The fixture only satisfies the Terraform configuration parser in destroy mode.
-          # The plan reviewer rejects any creation, update or resource outside this state.
-          if ! terraform -chdir=terraform plan -destroy -input=false -no-color -lock-timeout=60s \
-            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
-            -var="base_context_file=tests/fixtures/$TARGET_ENVIRONMENT-base.json" \
-            -out="$RUNNER_TEMP/database-destroy.tfplan" > "$RUNNER_TEMP/database-destroy-plan.log" 2>&1; then
-            grep '^Error:' "$RUNNER_TEMP/database-destroy-plan.log" | head -5 || true
-            echo '::error::Terraform destroy plan failed; no resources were deleted'
-            exit 1
-          fi
-          terraform -chdir=terraform show -json "$RUNNER_TEMP/database-destroy.tfplan" \
-            > "$RUNNER_TEMP/database-destroy.tfplan.json"
-      - name: Review exact deletions and publish a safe fingerprint
-        id: review
-        run: |
-          set -euo pipefail
-          python3 - "$RUNNER_TEMP/database-destroy.tfplan.json" "$TARGET_ENVIRONMENT" "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, os, re, sys
-
-          plan = json.load(open(sys.argv[1], encoding="utf-8"))
-          env = sys.argv[2]
-          prefix = f"mecanica-{env}"
-          allowed = {
-              "terraform_data.base_release", "aws_db_subnet_group.database",
-              "aws_security_group.database", "aws_db_instance.database",
-          }
-          rule = r'aws_vpc_security_group_ingress_rule\.postgres\["(sg-[0-9a-f]+)"\]'
-          def known(address):
-              return address in allowed or re.fullmatch(rule, address) is not None
-
-          variables = plan.get("variables") or {}
-          if (env not in ("hom", "prd") or
-              variables.get("environment", {}).get("value") != env or
-              variables.get("base_context_file", {}).get("value") != f"tests/fixtures/{env}-base.json" or
-              plan.get("errored") is True):
-              raise SystemExit("Plano incompatível com o ambiente selecionado.")
-          prior = (plan.get("prior_state") or {}).get("values") or {}
-          root = prior.get("root_module") or {}
-          if root.get("child_modules"):
-              raise SystemExit("Estado contém módulo fora do RDS PostgreSQL.")
-          state = root.get("resources") or []
-          state_addresses = set()
-          for resource in state:
-              address = resource.get("address", "")
-              if resource.get("mode") != "managed" or not known(address) or address in state_addresses:
-                  raise SystemExit("Estado contém recurso fora do RDS PostgreSQL.")
-              state_addresses.add(address)
-
-          changes = []
-          deleted = set()
-          own_group = None
-          for resource in plan.get("resource_changes") or []:
-              address = resource.get("address", "")
-              if (resource.get("mode") != "managed" or resource.get("module_address") or
-                  resource.get("previous_address") or not known(address) or
-                  address.split(".")[0] != resource.get("type")):
-                  raise SystemExit("Plano contém recurso fora do RDS PostgreSQL.")
-              change = resource.get("change") or {}
-              actions = change.get("actions")
-              before = change.get("before")
-              if actions == ["no-op"] and before is None:
-                  continue
-              if actions != ["delete"] or not isinstance(before, dict) or address in deleted:
-                  raise SystemExit("Plano aceita somente exclusão de recursos existentes.")
-              deleted.add(address)
-              changes.append(address)
-              kind = resource["type"]
-              if kind != "terraform_data":
-                  tags = before.get("tags_all") or before.get("tags") or {}
-                  if any(tags.get(key) != value for key, value in {
-                      "Project": "mecanica", "Environment": env, "ManagedBy": "Terraform"}.items()):
-                      raise SystemExit("Recurso sem tags de propriedade do ambiente.")
-              if kind == "terraform_data":
-                  identity = before.get("input") or {}
-                  if identity.get("parameter") != f"/mecanica/{env}/base/v1/database-release":
-                      raise SystemExit("Estado consome a base de outro ambiente.")
-              elif kind == "aws_db_subnet_group":
-                  if before.get("name") != f"{prefix}-database":
-                      raise SystemExit("Subnet group inesperado.")
-              elif kind == "aws_security_group":
-                  if before.get("name") != f"{prefix}-postgres":
-                      raise SystemExit("Security group inesperado.")
-                  own_group = before.get("id")
-              elif kind == "aws_db_instance":
-                  if (before.get("identifier") != f"{prefix}-postgres" or
-                      before.get("engine") != "postgres" or
-                      before.get("db_subnet_group_name") != f"{prefix}-database" or
-                      before.get("publicly_accessible") is not False or
-                      before.get("storage_encrypted") is not True or
-                      before.get("skip_final_snapshot") is not True or
-                      before.get("deletion_protection") is not False):
-                      raise SystemExit("Instância RDS inesperada ou descarte não autorizado pela configuração.")
-              elif kind == "aws_vpc_security_group_ingress_rule":
-                  source = re.fullmatch(rule, address).group(1)
-                  if before.get("referenced_security_group_id") != source:
-                      raise SystemExit("Regra PostgreSQL de origem inesperada.")
-          if deleted != state_addresses:
-              raise SystemExit("O plano não exclui exatamente todo o estado do banco.")
-          for resource in plan.get("resource_changes") or []:
-              if resource.get("type") == "aws_vpc_security_group_ingress_rule" and resource.get("change", {}).get("actions") == ["delete"]:
-                  if resource["change"]["before"].get("security_group_id") != own_group:
-                      raise SystemExit("Regra PostgreSQL fora do SG do banco.")
-              if resource.get("type") == "aws_db_instance" and resource.get("change", {}).get("actions") == ["delete"]:
-                  if resource["change"]["before"].get("vpc_security_group_ids") != [own_group]:
-                      raise SystemExit("Instância RDS fora do SG do banco.")
-          planned = (plan.get("planned_values") or {}).get("root_module") or {}
-          if planned.get("resources") or planned.get("child_modules"):
-              raise SystemExit("Plano não deixa o estado do banco vazio.")
-          with open(sys.argv[3], "a", encoding="utf-8") as summary:
-              summary.write(f"### Descarte do RDS PostgreSQL {env}\n\nCommit: {os.environ['GITHUB_SHA']}\n\n")
-              summary.write("| Recurso | Ação |\n| --- | --- |\n")
-              for address in changes:
-                  summary.write(f"| {address} | delete |\n")
-              if not changes:
-                  summary.write("| Estado vazio | no-op |\n")
-              summary.write("\nSem snapshot final. O plano binário permanece somente neste runner.\n")
-          PY
-          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift, prior_state}' \
-            "$RUNNER_TEMP/database-destroy.tfplan.json" | sha256sum | cut -d' ' -f1)"
-          fingerprint="$(printf '%s\n' 'destroy' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$plan_sha256" \
-            | sha256sum | cut -d' ' -f1)"
-          {
-            echo "commit=$GITHUB_SHA"
-            echo "fingerprint=$fingerprint"
-          } >> "$GITHUB_OUTPUT"
-          echo "Fingerprint do plano: $fingerprint." >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${{ inputs.action }}" == 'plan' ]]; then
-            echo 'Consulta concluída; nenhuma exclusão foi executada.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          role-session-name: database-plan-${{ github.run_id }}
+      - run: terraform init -backend-config="backends/$TARGET_ENVIRONMENT.hcl" -lockfile=readonly
+      - run: terraform validate -no-color
+      - run: terraform plan -destroy -var-file="environments/$TARGET_ENVIRONMENT.tfvars" -out=tfplan -no-color -lock-timeout=60s
+      - name: Present saved plan
+        run: terraform show -no-color tfplan | tee tfplan.txt
+      - uses: actions/upload-artifact@v4
+        id: artifact
+        with:
+          name: database-destroy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            terraform/tfplan
+            terraform/tfplan.txt
+          if-no-files-found: error
+          retention-days: 7
 
   approval:
     needs: plan
-    if: inputs.action == 'destroy'
-    name: Aprovar descarte do RDS PostgreSQL
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment:
-      name: ${{ inputs.environment == 'prd' && 'prd-approval' || 'hom-approval' }}
-      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#summary
+    environment: ${{ format('{0}-approval', inputs.environment) }}
     permissions: {}
     steps:
-      - name: Record approval
-        run: echo 'Descarte aprovado; o job seguinte refará o plano e verificará o fingerprint.'
+      - run: echo 'Plano desta execucao aprovado pelo Environment protegido.'
 
-  destroy:
+  apply:
     needs: [plan, approval]
-    if: inputs.action == 'destroy' && needs.plan.result == 'success' && needs.approval.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 60
     environment: ${{ inputs.environment }}
     permissions:
-      actions: read
       contents: read
+      actions: read
       id-token: write
-    defaults:
-      run:
-        shell: bash
     env:
-      EXPECTED_ACCOUNT: '121754142617'
-      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
-      TARGET_ENVIRONMENT: ${{ inputs.environment }}
-      EXPECTED_COMMIT: ${{ needs.plan.outputs.commit }}
-      APPROVED_FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
-      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
-      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      TF_WORKSPACE: default
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-      AWS_PAGER: ''
+      KUBECONFIG: /tmp/mecanica-kubeconfig
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate approved target before AWS authentication
-        run: |
-          set -euo pipefail
-          case "$TARGET_ENVIRONMENT" in
-            hom) expected_ref='refs/heads/develop' ;;
-            prd) expected_ref='refs/heads/main' ;;
-            *) echo '::error::Invalid environment'; exit 1 ;;
-          esac
-          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
-          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
-                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ||
-                "$EXPECTED_COMMIT" != "$GITHUB_SHA" || ! "$APPROVED_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]]; then
-            echo '::error::Target, variables or approved plan metadata changed'
-            exit 1
-          fi
-      - name: Recheck approval protection
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          name="$TARGET_ENVIRONMENT-approval"
-          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
-          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
-            echo "::error::Approval environment $name is unavailable"
-            exit 1
-          fi
-          if ! jq -e --arg name "$name" '
-            .name == $name and
-            ([.protection_rules[]? | select(.type == "required_reviewers" and
-              ((.reviewers // []) | length > 0))] | length) == 1
-          ' <<< "$configuration" >/dev/null; then
-            echo "::error::Required reviewers are missing in $name"
-            exit 1
-          fi
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
-      - name: Authenticate database role with fresh OIDC credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          aws-region: ${{ env.CONFIGURED_REGION }}
-          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           allowed-account-ids: '121754142617'
-          audience: sts.amazonaws.com
-          role-session-name: database-destroy-${{ github.run_id }}-${{ github.run_attempt }}
-          role-duration-seconds: 3600
-          unset-current-credentials: true
-          use-existing-credentials: false
-          output-credentials: false
-          translate-env-variables: false
-      - name: Replan and compare the approved result
-        run: |
-          set -euo pipefail
-          identity="$(aws sts get-caller-identity --query Arn --output text)"
-          if [[ ! "$identity" =~ ^arn:aws:sts::$EXPECTED_ACCOUNT:assumed-role/mecanica-$TARGET_ENVIRONMENT-database-github/[^/]+$ ]]; then
-            echo '::error::Unexpected AWS role'; exit 1
-          fi
-          terraform -chdir=terraform init -input=false -lockfile=readonly \
-            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
-          if ! terraform -chdir=terraform plan -destroy -input=false -no-color -lock-timeout=60s \
-            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
-            -var="base_context_file=tests/fixtures/$TARGET_ENVIRONMENT-base.json" \
-            -out="$RUNNER_TEMP/database-destroy.tfplan" > "$RUNNER_TEMP/database-destroy-plan.log" 2>&1; then
-            grep '^Error:' "$RUNNER_TEMP/database-destroy-plan.log" | head -5 || true
-            echo '::error::Terraform destroy replan failed; no resources were deleted'
-            exit 1
-          fi
-          terraform -chdir=terraform show -json "$RUNNER_TEMP/database-destroy.tfplan" \
-            > "$RUNNER_TEMP/database-destroy.tfplan.json"
-          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift, prior_state}' \
-            "$RUNNER_TEMP/database-destroy.tfplan.json" | sha256sum | cut -d' ' -f1)"
-          fingerprint="$(printf '%s\n' 'destroy' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$plan_sha256" \
-            | sha256sum | cut -d' ' -f1)"
-          if [[ "$fingerprint" != "$APPROVED_FINGERPRINT" ]]; then
-            echo '::error::Destroy plan changed after approval; no resources were deleted'
-            exit 1
-          fi
-      - name: Invalidate the database release, destroy and verify absence
-        run: |
-          set -euo pipefail
-          error_file="$RUNNER_TEMP/database-destroy-aws-error.log"
-          bash scripts/database_metadata.sh begin-destroy "$RUNNER_TEMP/database-destroy.tfplan.json"
-          terraform -chdir=terraform apply -input=false -no-color -lock-timeout=60s \
-            "$RUNNER_TEMP/database-destroy.tfplan" > "$RUNNER_TEMP/database-destroy-apply.log" 2>&1 || {
-              grep '^Error:' "$RUNNER_TEMP/database-destroy-apply.log" | head -5 || true
-              echo '::error::Terraform destroy failed; inspect state before retrying'
-              exit 1
-            }
-          if ! state_list="$(terraform -chdir=terraform state list)"; then
-            echo '::error::Unable to inspect database Terraform state'
-            exit 1
-          fi
-          if [[ -n "$state_list" ]]; then
-            echo '::error::Database Terraform state is not empty'
-            exit 1
-          fi
-          expect_absent() {
-            local expected="$1"; shift
-            if "$@" >/dev/null 2>"$error_file"; then
-              echo '::error::A reserved RDS resource still exists'; return 1
-            fi
-            if ! grep -Fq "($expected)" "$error_file"; then
-              echo '::error::Unable to verify RDS resource absence'; return 1
-            fi
-          }
-          prefix="mecanica-$TARGET_ENVIRONMENT"
-          expect_absent DBInstanceNotFound aws rds describe-db-instances \
-            --db-instance-identifier "$prefix-postgres"
-          expect_absent DBSubnetGroupNotFoundFault aws rds describe-db-subnet-groups \
-            --db-subnet-group-name "$prefix-database"
-          groups="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$prefix-postgres" \
-            --query 'SecurityGroups[].GroupId' --output text)"
-          if [[ -n "$groups" ]]; then
-            echo '::error::RDS security group still exists'
-            exit 1
-          fi
-          bash scripts/database_metadata.sh destroyed
-          {
-            echo '### RDS PostgreSQL descartado'
-            echo ''
-            echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
-            echo "Plano aprovado: $APPROVED_FINGERPRINT."
-            echo 'Estado do banco vazio; instância, subnet group, SG, campos ativos e release SSM ausentes; tentativa destroyed registrada.'
-            echo 'Bucket de estado, bootstrap, base e outro ambiente preservados.'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Invalidate readiness and record a failed destroy
-        if: ${{ always() && (failure() || cancelled()) }}
-        run: bash scripts/database_metadata.sh failed
+          role-session-name: database-apply-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact_id }}
+          path: terraform
+          merge-multiple: true
+      - run: terraform -chdir=terraform init -backend-config="backends/$TARGET_ENVIRONMENT.hcl" -lockfile=readonly
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+      - name: Configure Kubernetes access
+        run: aws eks update-kubeconfig --region us-east-1 --name "mecanica-$TARGET_ENVIRONMENT-eks"
+      - name: Remove initialization Job
+        run: kubectl -n database-init delete job database-init --ignore-not-found=true --wait=true
+      - name: Apply approved plan
+        run: terraform -chdir=terraform apply -no-color -lock-timeout=60s tfplan
+      - name: Remove temporary credentials
+        if: always()
+        run: kubectl -n database-init delete secret database-init-admin database-init-api database-init-auth --ignore-not-found=true

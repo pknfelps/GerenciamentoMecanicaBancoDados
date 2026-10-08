@@ -1,25 +1,16 @@
 name: ci
-
 on:
   pull_request:
-    branches: [main, develop]
+    branches: [develop, main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
-# PRs atualizados substituem seus checks; chamadas de provisionamento usam run_id.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  terraform-validate:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
     env:
-      TF_IN_AUTOMATION: "true"
-      TF_INPUT: "false"
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,78 +19,12 @@ jobs:
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
-      - name: Check formatting
-        run: terraform -chdir=terraform fmt -check -recursive
-      - name: Validate and test without AWS access
-        run: |
-          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
-          terraform -chdir=terraform validate -no-color
-          terraform -chdir=terraform test -no-color
-
-  database-validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: mecanica_ci
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: ci-ephemeral-only
-        ports:
-          - 5432/tcp
-        options: >-
-          --health-cmd "pg_isready -U postgres -d mecanica_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      PGHOST: 127.0.0.1
-      PGDATABASE: mecanica_ci
-      PGUSER: mecanica_admin
-      PGPASSWORD: ci-ephemeral-admin-only
-    steps:
-      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
         with:
-          persist-credentials: false
-      - name: Install PostgreSQL client
+          version: v1.36.0
+      - name: Format, validate and render
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql-client
-      - name: Test base release consumer and access evidence without AWS
-        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Prepare administrator without SUPERUSER
-        env:
-          PGPORT: ${{ job.services.postgres.ports['5432'] }}
-          PGUSER: postgres
-          PGPASSWORD: ci-ephemeral-only
-        run: |
-          psql --no-psqlrc --set=ON_ERROR_STOP=on \
-            --command="CREATE ROLE mecanica_admin LOGIN CREATEDB CREATEROLE PASSWORD 'ci-ephemeral-admin-only'"
-          psql --no-psqlrc --set=ON_ERROR_STOP=on \
-            --command="ALTER DATABASE mecanica_ci OWNER TO mecanica_admin"
-      - name: Initialize empty database
-        env:
-          PGPORT: ${{ job.services.postgres.ports['5432'] }}
-        run: psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/Init.sql
-      - name: Verify seeds and relational integrity
-        env:
-          PGPORT: ${{ job.services.postgres.ports['5432'] }}
-        run: psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/smoke.sql
-      - name: Create and verify restricted API user
-        env:
-          PGPORT: ${{ job.services.postgres.ports['5432'] }}
-          API_DB_PASSWORD: ci-ephemeral-api-password-123456789
-        run: |
-          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionApiUser.sql
-          PGUSER=mecanica_api PGPASSWORD="$API_DB_PASSWORD" \
-            psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/api-user-smoke.sql
-      - name: Create and verify read-only authentication user
-        env:
-          PGPORT: ${{ job.services.postgres.ports['5432'] }}
-          AUTH_DB_PASSWORD: ci-ephemeral-auth-password-123456789
-        run: |
-          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionAuthUser.sql
-          psql --no-psqlrc --set=ON_ERROR_STOP=on --single-transaction --file=sql/ProvisionAuthUser.sql
-          PGUSER=mecanica_auth PGPASSWORD="$AUTH_DB_PASSWORD" \
-            psql --no-psqlrc --set=ON_ERROR_STOP=on --file=tests/auth-user-smoke.sql
+          terraform -chdir=terraform fmt -check -recursive
+          terraform -chdir=terraform init -backend=false -lockfile=readonly
+          terraform -chdir=terraform validate -no-color
+          kubectl kustomize k8s

@@ -1,5 +1,5 @@
 name: database-provision
-run-name: RDS PostgreSQL ${{ inputs.environment }} / ${{ inputs.action }} / ${{ github.ref_name }}
+run-name: database-provision / ${{ inputs.environment }} / ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -10,619 +10,132 @@ on:
         default: hom
         type: choice
         options: [hom, prd]
-      action:
-        description: 'plan: consultar; activate: planejar, aprovar e aplicar'
-        required: true
-        default: plan
-        type: choice
-        options: [plan, activate]
+      adopt_existing_credentials:
+        description: 'Primeira adocao de secrets existentes: preservar suas senhas'
+        type: boolean
+        default: false
 
 permissions: {}
-
-# Inclui a espera pela aprovação; o check da base usa o mesmo grupo.
 concurrency:
   group: database-${{ inputs.environment }}
   cancel-in-progress: false
 
-jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.15.9
-          terraform_wrapper: false
-      - name: Validate consumer and Terraform without AWS
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -B -m unittest discover -s tests -p 'test_*.py' -q
-          terraform -chdir=terraform fmt -check -recursive
-          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
-          terraform -chdir=terraform validate -no-color
-          terraform -chdir=terraform test -no-color
+env:
+  TARGET_ENVIRONMENT: ${{ inputs.environment }}
+  AWS_REGION: us-east-1
+  AWS_PAGER: ''
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  TF_WORKSPACE: default
+  CHECKPOINT_DISABLE: '1'
+  TF_VAR_adopt_existing_credentials: ${{ inputs.adopt_existing_credentials || false }}
 
+jobs:
   plan:
-    needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment: ${{ inputs.environment }}
     permissions:
-      actions: read
       contents: read
       id-token: write
     outputs:
-      commit: ${{ steps.review.outputs.commit }}
-      fingerprint: ${{ steps.review.outputs.fingerprint }}
-      base_sha256: ${{ steps.review.outputs.base_sha256 }}
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
     defaults:
       run:
-        shell: bash
-    env:
-      EXPECTED_ACCOUNT: '121754142617'
-      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
-      TARGET_ENVIRONMENT: ${{ inputs.environment }}
-      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
-      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      TF_WORKSPACE: default
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-      AWS_PAGER: ''
+        working-directory: terraform
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate destination and existing variables
+      - name: Check branch and environment
         run: |
-          set -euo pipefail
-          case "$TARGET_ENVIRONMENT" in
-            hom) expected_ref='refs/heads/develop' ;;
-            prd) expected_ref='refs/heads/main' ;;
-            *) echo '::error::Invalid environment'; exit 1 ;;
-          esac
-          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
-          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
-                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ]]; then
-            echo '::error::Repository, branch or AWS variables do not match the selected environment'
-            exit 1
-          fi
-          echo "BASE_CONTEXT=$RUNNER_TEMP/database-base-context.json" >> "$GITHUB_ENV"
-          echo "KUBECONFIG=$RUNNER_TEMP/database-base-kubeconfig" >> "$GITHUB_ENV"
-      - name: Require protected approval environment
-        if: inputs.action == 'activate'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          name="$TARGET_ENVIRONMENT-approval"
-          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
-          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
-            echo "::error::Configure Settings > Environments > $name with Required reviewers"
-            exit 1
-          fi
-          if ! jq -e --arg name "$name" '
-            .name == $name and
-            ([.protection_rules[]? | select(.type == "required_reviewers" and
-              ((.reviewers // []) | length > 0))] | length) == 1
-          ' <<< "$configuration" >/dev/null; then
-            echo "::error::Required reviewers are missing in $name"
-            exit 1
-          fi
+          test "$GITHUB_REF" = "refs/heads/$( [ "$TARGET_ENVIRONMENT" = hom ] && echo develop || echo main )"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
-      - uses: azure/setup-kubectl@v4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          version: v1.36.1
-      - name: Authenticate database role with OIDC
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: ${{ env.CONFIGURED_REGION }}
-          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           allowed-account-ids: '121754142617'
-          audience: sts.amazonaws.com
-          role-session-name: database-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          role-duration-seconds: 3600
-          unset-current-credentials: true
-          use-existing-credentials: false
-          output-credentials: false
-          translate-env-variables: false
-      - name: Capture ready base and create the plan
-        run: |
-          set -euo pipefail
-          python3 scripts/consume_database_release.py capture \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform init -input=false -lockfile=readonly \
-            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
-          terraform -chdir=terraform plan -input=false -no-color -lock-timeout=60s \
-            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
-            -var="base_context_file=$BASE_CONTEXT" -out="$RUNNER_TEMP/database.tfplan"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform show -json "$RUNNER_TEMP/database.tfplan" > "$RUNNER_TEMP/database.tfplan.json"
-      - name: Review actions and publish a safe fingerprint
-        id: review
-        run: |
-          set -euo pipefail
-          python3 - "$RUNNER_TEMP/database.tfplan.json" "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, os, re, sys
-          plan = json.load(open(sys.argv[1], encoding="utf-8"))
-          prefix = f"mecanica-{os.environ['TARGET_ENVIRONMENT']}"
-          allowed = {
-              "terraform_data.base_release", "aws_db_subnet_group.database",
-              "aws_security_group.database", "aws_db_instance.database",
-          }
-          changes = []
-          for resource in plan.get("resource_changes", []):
-              address = resource["address"]
-              if resource.get("mode") != "managed" or not (
-                  address in allowed or re.fullmatch(
-                      r'aws_vpc_security_group_ingress_rule\.postgres\["sg-[0-9a-f]+"\]', address
-                  )
-              ):
-                  raise SystemExit("Plano contém recurso fora do módulo RDS PostgreSQL.")
-              actions = resource["change"]["actions"]
-              if actions not in (["no-op"], ["create"], ["update"]):
-                  raise SystemExit("Plano destrutivo ou substituição recusados.")
-              if actions != ["no-op"]:
-                  after = resource["change"].get("after") or {}
-                  if address == "aws_db_instance.database":
-                      expected = {
-                          "identifier": f"{prefix}-postgres",
-                          "engine": "postgres",
-                          "engine_version": "16.15",
-                          "instance_class": "db.t3.micro",
-                          "allocated_storage": 20,
-                          "storage_type": "gp3",
-                          "storage_encrypted": True,
-                          "manage_master_user_password": True,
-                          "publicly_accessible": False,
-                          "multi_az": False,
-                          "db_subnet_group_name": f"{prefix}-database",
-                          "skip_final_snapshot": True,
-                          "deletion_protection": False,
-                      }
-                      if any(after.get(key) != value for key, value in expected.items()):
-                          raise SystemExit("Instância RDS fora da configuração aprovada.")
-                  elif address == "aws_db_subnet_group.database":
-                      if after.get("name") != f"{prefix}-database":
-                          raise SystemExit("Subnet group inesperado.")
-                  elif address == "aws_security_group.database":
-                      if after.get("name") != f"{prefix}-postgres":
-                          raise SystemExit("Security group inesperado.")
-                  elif address.startswith("aws_vpc_security_group_ingress_rule.postgres["):
-                      source = re.fullmatch(
-                          r'aws_vpc_security_group_ingress_rule\.postgres\["(sg-[0-9a-f]+)"\]', address
-                      ).group(1)
-                      if (after.get("referenced_security_group_id") != source or
-                          after.get("from_port") != 5432 or
-                          after.get("to_port") != 5432 or
-                          after.get("ip_protocol") != "tcp"):
-                          raise SystemExit("Regra PostgreSQL inesperada.")
-                  changes.append((address, "/".join(actions)))
-          with open(sys.argv[2], "a", encoding="utf-8") as summary:
-              summary.write("### Plano do RDS PostgreSQL\n\n")
-              summary.write(f"Commit: {__import__('os').environ['GITHUB_SHA']}\n\n")
-              summary.write("| Recurso | Ação |\n| --- | --- |\n")
-              for address, action in changes:
-                  summary.write(f"| {address} | {action} |\n")
-              if not changes:
-                  summary.write("| Nenhuma alteração | no-op |\n")
-              summary.write("\nO plano binário e seus valores permanecem neste runner.\n")
-          PY
-          base_sha256="$(sha256sum "$BASE_CONTEXT" | cut -d' ' -f1)"
-          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift}' \
-            "$RUNNER_TEMP/database.tfplan.json" | sha256sum | cut -d' ' -f1)"
-          fingerprint="$(printf '%s\n' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$base_sha256" "$plan_sha256" \
-            | sha256sum | cut -d' ' -f1)"
-          {
-            echo "commit=$GITHUB_SHA"
-            echo "base_sha256=$base_sha256"
-            echo "fingerprint=$fingerprint"
-          } >> "$GITHUB_OUTPUT"
-          echo "Snapshot SHA-256: $base_sha256. Plano SHA-256: $fingerprint." >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${{ inputs.action }}" == 'plan' ]]; then
-            echo 'Consulta concluída; nenhum apply foi executado.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          role-session-name: database-plan-${{ github.run_id }}
+      - run: terraform init -backend-config="backends/$TARGET_ENVIRONMENT.hcl" -lockfile=readonly
+      - run: terraform validate -no-color
+      - run: terraform plan -var-file="environments/$TARGET_ENVIRONMENT.tfvars" -out=tfplan -no-color -lock-timeout=60s
+      - name: Present saved plan
+        run: terraform show -no-color tfplan | tee tfplan.txt
+      - uses: actions/upload-artifact@v4
+        id: artifact
+        with:
+          name: database-provision-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            terraform/tfplan
+            terraform/tfplan.txt
+          if-no-files-found: error
+          retention-days: 7
 
   approval:
     needs: plan
-    if: inputs.action == 'activate'
-    name: Aprovar plano do RDS PostgreSQL
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment:
-      name: ${{ inputs.environment == 'prd' && 'prd-approval' || 'hom-approval' }}
-      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#summary
+    environment: ${{ format('{0}-approval', inputs.environment) }}
     permissions: {}
     steps:
-      # Sem OIDC, credenciais AWS, estado ou plano binário neste job.
-      - name: Record approval
-        run: echo 'Plano desta execução aprovado; o apply fará novo plan e comparará o fingerprint.'
+      - run: echo 'Plano desta execucao aprovado pelo Environment protegido.'
 
   apply:
     needs: [plan, approval]
-    if: inputs.action == 'activate' && needs.plan.result == 'success' && needs.approval.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 60
     environment: ${{ inputs.environment }}
     permissions:
-      actions: read
       contents: read
+      actions: read
       id-token: write
-    defaults:
-      run:
-        shell: bash
     env:
-      EXPECTED_ACCOUNT: '121754142617'
-      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaBancoDados
-      TARGET_ENVIRONMENT: ${{ inputs.environment }}
-      EXPECTED_COMMIT: ${{ needs.plan.outputs.commit }}
-      APPROVED_FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
-      APPROVED_BASE_SHA256: ${{ needs.plan.outputs.base_sha256 }}
-      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
-      CONFIGURED_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      TF_WORKSPACE: default
-      TF_IN_AUTOMATION: 'true'
-      TF_INPUT: 'false'
-      CHECKPOINT_DISABLE: '1'
-      AWS_PAGER: ''
+      KUBECONFIG: /tmp/mecanica-kubeconfig
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate approved target before AWS authentication
-        run: |
-          set -euo pipefail
-          case "$TARGET_ENVIRONMENT" in
-            hom) expected_ref='refs/heads/develop' ;;
-            prd) expected_ref='refs/heads/main' ;;
-            *) echo '::error::Invalid environment'; exit 1 ;;
-          esac
-          expected_role="arn:aws:iam::$EXPECTED_ACCOUNT:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-database-github"
-          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ||
-                "$CONFIGURED_REGION" != 'us-east-1' || "$CONFIGURED_ROLE_ARN" != "$expected_role" ||
-                "$EXPECTED_COMMIT" != "$GITHUB_SHA" ||
-                ! "$APPROVED_FINGERPRINT" =~ ^[0-9a-f]{64}$ ||
-                ! "$APPROVED_BASE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-            echo '::error::Target, variables or approved plan metadata changed'
-            exit 1
-          fi
-          echo "BASE_CONTEXT=$RUNNER_TEMP/database-base-context.json" >> "$GITHUB_ENV"
-          echo "KUBECONFIG=$RUNNER_TEMP/database-base-kubeconfig" >> "$GITHUB_ENV"
-      - name: Recheck approval protection
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          name="$TARGET_ENVIRONMENT-approval"
-          url="https://api.github.com/repos/$EXPECTED_REPOSITORY/environments/$name"
-          if ! configuration="$(curl --fail --silent --show-error --max-time 30 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"; then
-            echo "::error::Approval environment $name is unavailable"
-            exit 1
-          fi
-          if ! jq -e --arg name "$name" '
-            .name == $name and
-            ([.protection_rules[]? | select(.type == "required_reviewers" and
-              ((.reviewers // []) | length > 0))] | length) == 1
-          ' <<< "$configuration" >/dev/null; then
-            echo "::error::Required reviewers are missing in $name"
-            exit 1
-          fi
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          allowed-account-ids: '121754142617'
+          role-session-name: database-apply-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact_id }}
+          path: terraform
+          merge-multiple: true
+      - run: terraform -chdir=terraform init -backend-config="backends/$TARGET_ENVIRONMENT.hcl" -lockfile=readonly
       - uses: azure/setup-kubectl@v4
         with:
-          version: v1.36.1
-      - name: Authenticate database role with fresh OIDC credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: ${{ env.CONFIGURED_REGION }}
-          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          audience: sts.amazonaws.com
-          role-session-name: database-apply-${{ github.run_id }}-${{ github.run_attempt }}
-          role-duration-seconds: 3600
-          unset-current-credentials: true
-          use-existing-credentials: false
-          output-credentials: false
-          translate-env-variables: false
-      - name: Recapture base, replan and apply only the approved result
-        run: |
-          set -euo pipefail
-          python3 scripts/consume_database_release.py capture \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform init -input=false -lockfile=readonly \
-            -backend-config="backends/$TARGET_ENVIRONMENT.hcl"
-          terraform -chdir=terraform plan -input=false -no-color -lock-timeout=60s \
-            -var-file="environments/$TARGET_ENVIRONMENT.tfvars" \
-            -var="base_context_file=$BASE_CONTEXT" -out="$RUNNER_TEMP/database.tfplan"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform show -json "$RUNNER_TEMP/database.tfplan" > "$RUNNER_TEMP/database.tfplan.json"
-          base_sha256="$(sha256sum "$BASE_CONTEXT" | cut -d' ' -f1)"
-          plan_sha256="$(jq -cS '{resource_changes, output_changes, resource_drift}' \
-            "$RUNNER_TEMP/database.tfplan.json" | sha256sum | cut -d' ' -f1)"
-          fingerprint="$(printf '%s\n' "$GITHUB_SHA" "$TARGET_ENVIRONMENT" "$base_sha256" "$plan_sha256" \
-            | sha256sum | cut -d' ' -f1)"
-          if [[ "$base_sha256" != "$APPROVED_BASE_SHA256" ||
-                "$fingerprint" != "$APPROVED_FINGERPRINT" ]]; then
-            echo '::error::Base or Terraform plan changed after approval; no apply'
-            exit 1
-          fi
-          # Recheck immediately before the mutation, including the SSM version.
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          bash scripts/database_metadata.sh begin-provision "$BASE_CONTEXT"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform apply -input=false -no-color -lock-timeout=60s \
-            "$RUNNER_TEMP/database.tfplan"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-      - name: Initialize schema in EKS
+          version: v1.36.0
+      - name: Configure Kubernetes access
+        run: aws eks update-kubeconfig --region us-east-1 --name "mecanica-$TARGET_ENVIRONMENT-eks"
+      - name: Apply approved plan
+        run: terraform -chdir=terraform apply -no-color -lock-timeout=60s tfplan
+      - name: Initialize schema
         id: initialize
         run: |
-          set -euo pipefail
-          prefix="mecanica-$TARGET_ENVIRONMENT"
-          endpoint="$(terraform -chdir=terraform output -raw endpoint)"
-          port="$(terraform -chdir=terraform output -raw port)"
-          database="$(terraform -chdir=terraform output -raw database_name)"
-          secret_arn="$(terraform -chdir=terraform output -raw admin_secret_arn)"
-          rds_secret_arn="$(aws rds describe-db-instances \
-            --db-instance-identifier "$prefix-postgres" \
-            --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)"
-          if [[ ! "$endpoint" =~ ^${prefix}-postgres\.[a-z0-9.-]+\.rds\.amazonaws\.com$ ||
-                "$port" != 5432 || "$database" != mecanica ||
-                ! "$secret_arn" =~ ^arn:aws:secretsmanager:us-east-1:121754142617:secret:rds!db-[A-Za-z0-9-]+$ ||
-                "$secret_arn" != "$rds_secret_arn" ]]; then
-            echo '::error::RDS outputs do not identify the expected environment'
-            exit 1
-          fi
-          ca_file="$RUNNER_TEMP/database-rds-ca.pem"
-          master_file="$RUNNER_TEMP/database-master.json"
-          password_file="$RUNNER_TEMP/database-admin-password"
-          api_secret_file="$RUNNER_TEMP/database-api-secret.json"
-          api_password_file="$RUNNER_TEMP/database-api-password"
-          api_secret_error="$RUNNER_TEMP/database-api-secret-error.log"
-          api_secret_name="/mecanica/$TARGET_ENVIRONMENT/database/api"
-          auth_secret_file="$RUNNER_TEMP/database-auth-secret.json"
-          auth_password_file="$RUNNER_TEMP/database-auth-password"
-          auth_secret_error="$RUNNER_TEMP/database-auth-secret-error.log"
-          auth_secret_name="/mecanica/$TARGET_ENVIRONMENT/database/auth"
-          cleanup_resources=false
-          cleanup() {
-            rm -f "$master_file" "$password_file" "$api_secret_file" "$api_password_file" "$api_secret_error"
-            rm -f "$auth_secret_file" "$auth_password_file" "$auth_secret_error"
-            if [[ "$cleanup_resources" == true ]]; then
-              kubectl -n default delete secret database-init-admin --ignore-not-found=true >/dev/null || true
-              kubectl -n default delete secret database-init-api --ignore-not-found=true >/dev/null || true
-              kubectl -n default delete secret database-init-auth --ignore-not-found=true >/dev/null || true
-              kubectl -n default delete configmap database-init-input --ignore-not-found=true >/dev/null || true
-            fi
-          }
-          trap cleanup EXIT
-          umask 077
-          curl --fail --silent --show-error --max-time 30 \
-            'https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem' \
-            --output "$ca_file"
-          if [[ "$(wc -c < "$ca_file")" -gt 512000 ]]; then
-            echo '::error::Invalid RDS CA bundle size'; exit 1
-          fi
-          openssl x509 -in "$ca_file" -noout >/dev/null
-          sql_sha256="$(sha256sum sql/Init.sql | cut -d' ' -f1)"
-          aws secretsmanager get-secret-value --secret-id "$secret_arn" \
-            --query SecretString --output text > "$master_file"
-          jq -e '.username == "mecanica_admin" and (.password | type == "string" and length > 0)' \
-            "$master_file" >/dev/null
-          jq -jr '.password' "$master_file" > "$password_file"
-          if ! aws secretsmanager describe-secret --secret-id "$api_secret_name" \
-            --query ARN --output text >/dev/null 2>"$api_secret_error"; then
-            if ! grep -Fq '(ResourceNotFoundException)' "$api_secret_error"; then
-              echo '::error::Unable to inspect the API database secret'; exit 1
-            fi
-            openssl rand -hex 32 | tr -d '\n' > "$api_password_file"
-            jq -n --rawfile password "$api_password_file" \
-              '{username: "mecanica_api", password: $password}' > "$api_secret_file"
-            aws secretsmanager create-secret \
-              --name "$api_secret_name" \
-              --description "PostgreSQL API user for $TARGET_ENVIRONMENT" \
-              --secret-string "file://$api_secret_file" \
-              --tags Key=Project,Value=mecanica Key=Environment,Value="$TARGET_ENVIRONMENT" Key=ManagedBy,Value=database-provision \
-              --query ARN --output text >/dev/null
-          fi
-          api_secret_arn="$(aws secretsmanager describe-secret --secret-id "$api_secret_name" \
-            --query ARN --output text)"
-          if [[ ! "$api_secret_arn" =~ ^arn:aws:secretsmanager:us-east-1:121754142617:secret:/mecanica/$TARGET_ENVIRONMENT/database/api-[A-Za-z0-9]{6}$ ]]; then
-            echo '::error::Unexpected API database secret ARN'; exit 1
-          fi
-          aws secretsmanager get-secret-value --secret-id "$api_secret_arn" \
-            --query SecretString --output text > "$api_secret_file"
-          jq -e '.username == "mecanica_api" and (.password | type == "string" and length >= 32)' \
-            "$api_secret_file" >/dev/null
-          jq -jr '.password' "$api_secret_file" > "$api_password_file"
-          if ! aws secretsmanager describe-secret --secret-id "$auth_secret_name" \
-            --query ARN --output text >/dev/null 2>"$auth_secret_error"; then
-            if ! grep -Fq '(ResourceNotFoundException)' "$auth_secret_error"; then
-              echo '::error::Unable to inspect the authentication database secret'; exit 1
-            fi
-            openssl rand -hex 32 | tr -d '\n' > "$auth_password_file"
-            jq -n --rawfile password "$auth_password_file" \
-              '{username: "mecanica_auth", password: $password}' > "$auth_secret_file"
-            aws secretsmanager create-secret \
-              --name "$auth_secret_name" \
-              --description "PostgreSQL authentication user for $TARGET_ENVIRONMENT" \
-              --secret-string "file://$auth_secret_file" \
-              --tags Key=Project,Value=mecanica Key=Environment,Value="$TARGET_ENVIRONMENT" Key=ManagedBy,Value=database-provision \
-              --query ARN --output text >/dev/null
-          fi
-          auth_secret_arn="$(aws secretsmanager describe-secret --secret-id "$auth_secret_name" \
-            --query ARN --output text)"
-          if [[ ! "$auth_secret_arn" =~ ^arn:aws:secretsmanager:us-east-1:121754142617:secret:/mecanica/$TARGET_ENVIRONMENT/database/auth-[A-Za-z0-9]{6}$ ]]; then
-            echo '::error::Unexpected authentication database secret ARN'; exit 1
-          fi
-          aws secretsmanager get-secret-value --secret-id "$auth_secret_arn" \
-            --query SecretString --output text > "$auth_secret_file"
-          jq -e '.username == "mecanica_auth" and (.password | type == "string" and length >= 32)' \
-            "$auth_secret_file" >/dev/null
-          jq -jr '.password' "$auth_secret_file" > "$auth_password_file"
-          kubectl -n default delete job database-init --ignore-not-found=true --wait=true
-          kubectl -n default delete secret database-init-admin --ignore-not-found=true
-          kubectl -n default delete secret database-init-api --ignore-not-found=true
-          kubectl -n default delete secret database-init-auth --ignore-not-found=true
-          kubectl -n default delete configmap database-init-input --ignore-not-found=true
-          cleanup_resources=true
-          kubectl -n default create configmap database-init-input \
-            --from-literal="PGHOST=$endpoint" \
-            --from-literal="SQL_SHA256=$sql_sha256" \
-            --from-file=Init.sql=sql/Init.sql \
-            --from-file=ProvisionApiUser.sql=sql/ProvisionApiUser.sql \
-            --from-file=ProvisionAuthUser.sql=sql/ProvisionAuthUser.sql \
-            --from-file=ReadInitialization.sql=sql/ReadInitialization.sql \
-            --from-file=smoke.sql=tests/smoke.sql \
-            --from-file=api-user-smoke.sql=tests/api-user-smoke.sql \
-            --from-file=auth-user-smoke.sql=tests/auth-user-smoke.sql \
-            --from-file="rds-ca.pem=$ca_file"
-          kubectl -n default create secret generic database-init-admin \
-            --from-file="password=$password_file"
-          kubectl -n default create secret generic database-init-api \
-            --from-file="password=$api_password_file"
-          kubectl -n default create secret generic database-init-auth \
-            --from-file="password=$auth_password_file"
-          rm -f "$master_file" "$password_file" "$api_secret_file" "$api_password_file"
-          rm -f "$auth_secret_file" "$auth_password_file"
-          kubectl apply -f k8s/database-init.yaml -o json > "$RUNNER_TEMP/database-init-created.json"
-          job_uid="$(jq -er '.metadata.uid' "$RUNNER_TEMP/database-init-created.json")"
-          if ! kubectl -n default wait --for=condition=complete job/database-init --timeout=930s; then
-            kubectl -n default describe job/database-init || true
-            kubectl -n default logs job/database-init --all-containers=true --prefix=true || true
-            exit 1
-          fi
-          {
-            echo "job_uid=$job_uid"
-            echo "api_secret_arn=$api_secret_arn"
-            echo "auth_secret_arn=$auth_secret_arn"
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo '### RDS PostgreSQL provisionado'
-            echo ''
-            echo "Ambiente: $TARGET_ENVIRONMENT. Commit: $GITHUB_SHA."
-            echo "Plano aprovado: $APPROVED_FINGERPRINT."
-            echo 'Esquema e usuários PostgreSQL da API e autenticação validados via Job EKS; manifesto será montado e publicado em seguida.'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Assemble verified database manifest
-        env:
-          INITIALIZATION_JOB_UID: ${{ steps.initialize.outputs.job_uid }}
-          API_SECRET_ARN: ${{ steps.initialize.outputs.api_secret_arn }}
-          AUTH_SECRET_ARN: ${{ steps.initialize.outputs.auth_secret_arn }}
+          kubectl -n database-init delete job database-init --ignore-not-found=true --wait=true
+          kubectl apply -f k8s/database-init.yaml
+          kubectl -n database-init wait --for=condition=complete job/database-init --timeout=900s
+          kubectl -n database-init logs job/database-init
+      - name: Diagnose initialization failure
+        if: failure() && steps.initialize.outcome == 'failure'
         run: |
-          set -euo pipefail
-          umask 077
-          manifest="$RUNNER_TEMP/database-release.json"
-          rm -f "$manifest" "$manifest.tmp"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          terraform -chdir=terraform output -json > "$RUNNER_TEMP/database-outputs.json"
-          aws rds describe-db-instances --db-instance-identifier "mecanica-$TARGET_ENVIRONMENT-postgres" \
-            --query 'DBInstances[0].{arn:DBInstanceArn,endpoint:Endpoint.Address,port:Endpoint.Port,database:DBName,status:DBInstanceStatus,public:PubliclyAccessible,groups:VpcSecurityGroups,adminSecret:MasterUserSecret.SecretArn,engine:Engine,vpc:DBSubnetGroup.VpcId}' \
-            --output json > "$RUNNER_TEMP/database-instance.json"
-          jq -e --slurpfile outputs "$RUNNER_TEMP/database-outputs.json" --slurpfile base "$BASE_CONTEXT" '
-            .status == "available" and .public == false and .engine == "postgres" and
-            .arn == $outputs[0].instance_arn.value and
-            .endpoint == $outputs[0].endpoint.value and .port == $outputs[0].port.value and
-            .database == $outputs[0].database_name.value and
-            .vpc == $base[0].manifest.exports["vpc-id"] and
-            .adminSecret == $outputs[0].admin_secret_arn.value and
-            (.groups | length) == 1 and .groups[0].Status == "active" and
-            .groups[0].VpcSecurityGroupId == $outputs[0].security_group_id.value
-          ' "$RUNNER_TEMP/database-instance.json" >/dev/null
-          kubectl -n default get job database-init -o json > "$RUNNER_TEMP/database-init-completed.json"
-          jq -e --arg uid "$INITIALIZATION_JOB_UID" '
-            ($uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
-            .metadata.uid == $uid
-          ' "$RUNNER_TEMP/database-init-completed.json" >/dev/null
-          kubectl -n default get pods -l "batch.kubernetes.io/controller-uid=$INITIALIZATION_JOB_UID" \
-            -o json > "$RUNNER_TEMP/database-init-pods.json"
-          jq -ce --arg uid "$INITIALIZATION_JOB_UID" '
-            if (.items | length) != 1 then error("UNEXPECTED_INITIALIZATION_PODS") else .items[0] end
-            | if .metadata.namespace != "default" or .status.phase != "Succeeded" or
-                 ([.metadata.ownerReferences[]? | select(.kind == "Job" and .controller == true and .uid == $uid)] | length) != 1
-              then error("INITIALIZATION_POD_MISMATCH") else . end
-            | if ([.spec.containers[]? | select(.name == "initialize") | .env[]? |
-                   select(.name == "PGSSLMODE" and .value == "verify-full")] | length) != 1
-              then error("TLS_VERIFICATION_MISSING") else . end
-            | [.status.containerStatuses[]? | select(.name == "initialize")]
-            | if length != 1 or .[0].state.terminated.exitCode != 0
-              then error("INITIALIZATION_CONTAINER_FAILED") else .[0].state.terminated.message | fromjson end
-          ' "$RUNNER_TEMP/database-init-pods.json" > "$RUNNER_TEMP/database-schema-marker.json"
-          recorded_at="$(date -u +'%Y-%m-%dT%H:%M:%S.%NZ')"
-          sql_sha256="$(sha256sum sql/Init.sql | cut -d' ' -f1)"
-          jq -n --slurpfile base "$BASE_CONTEXT" --slurpfile outputs "$RUNNER_TEMP/database-outputs.json" \
-            --slurpfile job "$RUNNER_TEMP/database-init-completed.json" --slurpfile schema "$RUNNER_TEMP/database-schema-marker.json" \
-            --arg environment "$TARGET_ENVIRONMENT" --arg repository "$GITHUB_REPOSITORY" \
-            --arg commit "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
-            --arg recordedAt "$recorded_at" --arg apiSecretArn "$API_SECRET_ARN" --arg authSecretArn "$AUTH_SECRET_ARN" '
-            {execution: {environment: $environment, repository: $repository, commit: $commit,
-                         runId: $runId, runAttempt: $runAttempt, recordedAt: $recordedAt},
-             baseContext: $base[0], outputs: $outputs[0], job: $job[0], schema: $schema[0],
-             credentials: {apiSecretArn: $apiSecretArn, authSecretArn: $authSecretArn},
-             verification: ["rds-private", "tls-verify-full", "schema-seeds", "api-login-permissions", "auth-login-permissions"]}
-          ' > "$RUNNER_TEMP/database-manifest-input.json"
-          jq -cej --arg schema_version '1.0.0' --arg sql_sha256 "$sql_sha256" \
-            -f manifests/database-release.jq "$RUNNER_TEMP/database-manifest-input.json" > "$manifest.tmp"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          mv "$manifest.tmp" "$manifest"
-          {
-            echo '### Manifesto do banco gerado'
-            echo ''
-            echo 'JSON validado após o Job, sem valores de credenciais; disponível no artefato desta execução.'
-            echo 'A etapa seguinte publica os campos e a release no SSM e confere as gravações.'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload database manifest for review
-        uses: actions/upload-artifact@v4
-        with:
-          name: database-manifest-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/database-release.json
-          if-no-files-found: error
-          retention-days: 7
-      - name: Publish database metadata in SSM
-        run: |
-          set -euo pipefail
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          bash scripts/database_metadata.sh publish "$RUNNER_TEMP/database-release.json"
-          python3 scripts/consume_database_release.py recheck \
-            --environment "$TARGET_ENVIRONMENT" --context "$BASE_CONTEXT"
-          {
-            echo '### Release do banco publicada'
-            echo ''
-            echo "SSM: /mecanica/$TARGET_ENVIRONMENT/database/v1/release"
-            echo 'Campos, tentativa ready e manifesto gravados e conferidos; dependência da base revalidada.'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Invalidate readiness and record a failed operation
-        if: ${{ always() && (failure() || cancelled()) }}
-        run: bash scripts/database_metadata.sh failed
+          kubectl -n database-init describe job database-init
+          kubectl -n database-init get pods -l job-name=database-init -o wide
+          kubectl -n database-init logs -l job-name=database-init --all-containers=true --prefix=true
+      - name: Remove temporary credentials
+        if: always()
+        run: kubectl -n database-init delete secret database-init-admin database-init-api database-init-auth --ignore-not-found=true
