@@ -3,7 +3,7 @@
 Fonte: `sql/Init.sql`. Criação completa em banco vazio, com seeds; não é migração,
 não apaga dados existentes e não deve ser reaplicada em cada deploy/startup.
 Executar com `psql -X --set=ON_ERROR_STOP=on --single-transaction --file=sql/Init.sql`.
-A versão está definida no cabeçalho do SQL; ainda não há release SSM publicada.
+A versão está definida no cabeçalho do SQL; SSM v2 publica configuração esperada, sem release de prontidão.
 O hash do esquema continua sendo SHA-256 dos bytes de `sql/Init.sql`.
 
 O Job EKS usa `schema_initialization` como registro operacional: grava
@@ -11,7 +11,7 @@ O Job EKS usa `schema_initialization` como registro operacional: grava
 não pertence ao domínio da API e não deve ser escrita pela aplicação. O
 `Init.sql` executado manualmente apenas cria a tabela; o registro é gravado
 pelo Job. Em uma ativação repetida, o Job exige exatamente um registro com
-versão e hash atuais antes de repetir o smoke.
+versão e hash atuais antes de provisionar os usuários/grants. Não há SQLs de smoke na operação declarativa.
 
 ## Contrato de persistência
 
@@ -85,13 +85,12 @@ OrdersRepository/OrderDb/domínio/projeções, gravar histórico transacionalmen
 adicionar status do cliente e trocar os perfis User/Manager por Admin/Mechanic.
 Não implantar a API antiga contra esse esquema esperando compatibilidade.
 
-`tests/smoke.sql` valida seeds/perfis, status padrão e fixture Inactive, relações,
-unicidade de documento, ausência das colunas antigas, registros dos dois caminhos,
-instantes equivalentes em UTC, ordenação explícita com empate, tempo total sem
-entrega e retenção após DELETE. Tudo termina
-em ROLLBACK. O CI executa o SQL em PostgreSQL 16.
+A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
+1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.
+SQLs de smoke e scripts de teste foram removidos conforme ADR 008. As evidencias
+anteriores de hom permanecem no acompanhamento da Fase 3; a execucao do fluxo
+declarativo novo ainda depende de PR, planos aprovados e pipelines.
 
-Validação inicial em 2026-10-06: Init e smoke aprovados em PostgreSQL 18.3
-temporário. Após retirar os CONSTRAINT nomeados e o índice a pedido do usuário,
-o SQL foi testado novamente na mesma versão; PostgreSQL 16 fica para o CI.
-Job Kubernetes, credenciais/grants separados e publicação SSM continuam pendentes.
+O conteudo entregue ao ConfigMap usa LF, como o arquivo versionado no Git;
+Terraform calcula SHA-256 desse mesmo conteudo. Isso preserva o marcador entre
+checkouts Windows/Linux, sem alterar Init.sql nem dados existentes.
