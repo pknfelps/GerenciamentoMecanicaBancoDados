@@ -8,6 +8,7 @@ RDS PostgreSQL privado em Terraform; SQL versionado e Job Kubernetes em manifest
 | sql/Init.sql | Esquema/seeds 1.0.0 e tabela schema_initialization, preservados |
 | sql/ProvisionApiUser.sql, ProvisionAuthUser.sql | Usuários/grants já existentes |
 | k8s/database-init.yaml | Job estático, namespace reservado database-init |
+| k8s/database-access.yaml | Pod temporário de acesso SQL manual; não integra o provisionamento |
 | k8s/rds-ca.pem | Bundle público AWS us-east-1 para verify-full |
 
 Terraform 1.15.9/providers AWS 6.58.0, Kubernetes 3.3.0 e random 3.7.2, fixados no lock Windows/Linux. RDS postgres16.15/db.t3.micro/Single-AZ/20GiB gp3; nomes/backends/recursos atuais preservados. Base deve publicar SSM v2 e criar namespace antes do plan do banco. Não consumir estado remoto da base.
@@ -34,6 +35,29 @@ kubectl --kubeconfig ./database-kubeconfig -n database-init delete secret databa
 
 Não deixar credenciais temporárias após apply local que não execute o Job. Falha de conexão Kubernetes não autoriza imprimir Secret; recuperar acesso e executar cleanup.
 
+## Acesso SQL temporário
+
+Com base/banco inicializados, o manifesto `k8s/database-access.yaml` disponibiliza somente o cliente psql no namespace `database-init`. Reutiliza endpoint e certificado público do ConfigMap `database-init-input`, com usuário `mecanica_api` e TLS `verify-full`. Não executa Init.sql, não provisiona usuários e não altera o deploy da API. Não é incluído no Kustomize ou nos workflows.
+
+```bash
+aws eks update-kubeconfig --profile mecanica --region us-east-1 --name mecanica-hom-eks --kubeconfig ./database-kubeconfig
+kubectl --kubeconfig ./database-kubeconfig apply -f k8s/database-access.yaml
+kubectl --kubeconfig ./database-kubeconfig -n database-init wait --for=condition=Ready pod/database-access --timeout=120s
+kubectl --kubeconfig ./database-kubeconfig -n database-init exec -it database-access -- psql -X -W
+```
+
+Na sessão manual, obter a senha atual de `/mecanica/hom/database/api` no console Secrets Manager com uma identidade autorizada e digitá-la somente no prompt do psql. Não salvar no YAML, argumento de comando ou documentação. O acesso EKS do usuário IAM `mecanica` não concede automaticamente leitura do Secret; autenticação e grants PostgreSQL continuam separados. O usuário de banco da API já permite SELECT no histórico e UPDATE em customers; não é necessário usar o administrador para essas validações.
+
+Encerrar o psql com `\q` e remover o Pod, inclusive se a validação falhar:
+
+```bash
+kubectl --kubeconfig ./database-kubeconfig -n database-init delete pod database-access --ignore-not-found=true --wait=true
+```
+
+O Pod tem limite de execução de uma hora; após o prazo pode permanecer como objeto concluído/falho, portanto a exclusão explícita continua necessária. Não cria Service, porta pública, volume persistente, identidade AWS ou Secret Kubernetes. Na execução automatizada autorizada, a senha pode ser entregue apenas pela entrada da sessão exec, mantendo-a fora do manifesto e dos logs. No Windows, essa entrada deve preservar os bytes, sem acrescentar CR à senha por conversão CRLF. Alterações SQL confirmadas permanecem após excluir o Pod.
+
+Conferência hom em 14/10/2026: conexão mecanica_api/TLSv1.3, inativação de cliente fictício, bloqueio de nova autenticação sem revogar JWT anterior e 44 eventos históricos de doze OSs conferidos, incluindo preservação após DELETE. Foram aprovadas 141 verificações, com 29 chamadas pelo Gateway. Pod removido, nenhum Secret temporário criado; sem novo deploy da API ou alteração de grants/esquema/IAM. A execução não comprova prd ou acesso administrativo geral ao banco.
+
 ## Dados e descarte
 
 Job inicializa apenas banco vazio. Marcador idêntico preserva initialized_at e evita seeds repetidos; SQL incompatível/tabelas sem marcador interrompem. Depois provisiona API/auth com grants atuais. Sem teste SQL adicional e sem migração incremental em startup. [Esquema](docs/SCHEMA.md).
@@ -46,3 +70,9 @@ database-destroy também tem plan/approval/apply; remove Job antes do apply. RDS
 - [Migração](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/MIGRACAO_DECLARATIVA.md)
 
 Recuperação hom concluída em 2026-10-08 com plano aprovado: grupo de subnets recriado na VPC nova, RDS disponível, Job concluído e credenciais temporárias removidas. A retirada da opção de adoção está validada localmente e segue pelo fluxo de PR/pipeline do usuário.
+
+## Bloqueios no database-destroy — 17/10/2026
+
+O workflow verifica somente recursos Kubernetes da API e autenticação antes do plan e novamente antes das exclusões no apply. Não consulta Gateway, cuja remoção é exigida nos destroys de API/auth. Função auth, ENIs ou regras de saída remanescentes bloqueiam imediatamente. Erros de consulta não são tratados como ausência. A limpeza always dos Secrets só pode executar depois de as dependências serem aprovadas e o acesso Kubernetes estar configurado.
+
+Pré-requisito: bootstrap revisado aplicado e base com AmazonEKSViewPolicy em default para esta pipeline, preservando Edit somente em database-init. EKS permanece até a base ser descartada; API com zero réplicas ainda bloqueia enquanto seus recursos existirem. [Procedimento](docs/RDS_TERRAFORM.md). Esta alteração não automatiza recuperação do banco quando EKS/SSM já desapareceram.
