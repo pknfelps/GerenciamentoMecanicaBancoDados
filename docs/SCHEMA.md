@@ -80,10 +80,12 @@ existir, inclusive após DELETE da OS. Destruir o banco encerra esse histórico.
 
 ## Compatibilidade e validação
 
-**A API atual ainda não é compatível com esse esquema.** A E4 precisa adaptar
-OrdersRepository/OrderDb/domínio/projeções, gravar histórico transacionalmente,
-adicionar status do cliente e trocar os perfis User/Manager por Admin/Mechanic.
-Não implantar a API antiga contra esse esquema esperando compatibilidade.
+A API foi adaptada ao esquema: status Active/Inactive, perfis Admin/Mechanic e
+projeções pelo histórico estão implementados. A consolidação E4 protege a leitura
+e decisão por bloqueio transacional da OS/material, torna todo DELETE atômico e
+representa conclusão/duração ausentes com null. Não modifica este esquema ou seeds.
+Publicar a revisão correspondente da API/OpenAPI e atualizar o Gateway; a validação
+local não substitui a inspeção SQL de histórico e Inativo em hom ainda pendente.
 
 A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
 1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.

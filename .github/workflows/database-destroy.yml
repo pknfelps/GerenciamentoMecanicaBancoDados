@@ -20,6 +20,7 @@ env:
   TARGET_ENVIRONMENT: ${{ inputs.environment }}
   AWS_REGION: us-east-1
   AWS_PAGER: ''
+  KUBECONFIG: /tmp/mecanica-kubeconfig
   TF_IN_AUTOMATION: 'true'
   TF_INPUT: 'false'
   TF_WORKSPACE: default
@@ -45,7 +46,10 @@ jobs:
           persist-credentials: false
       - name: Check branch and environment
         run: |
-          test "$GITHUB_REF" = "refs/heads/$( [ "$TARGET_ENVIRONMENT" = hom ] && echo develop || echo main )"
+          case "$TARGET_ENVIRONMENT:$GITHUB_REF" in
+            hom:refs/heads/develop|prd:refs/heads/main) ;;
+            *) echo '::error::Use develop/hom ou main/prd'; exit 1 ;;
+          esac
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.9
@@ -56,6 +60,64 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           allowed-account-ids: '121754142617'
           role-session-name: database-plan-${{ github.run_id }}
+      - uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with:
+          version: v1.36.0
+      - name: Check API removal
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in hom|prd) ;; *) exit 1 ;; esac
+          test "$AWS_REGION" = us-east-1
+          cluster="mecanica-$TARGET_ENVIRONMENT-eks"
+          clusters="$(aws eks list-clusters --query "clusters[?@=='$cluster']" --output json)"
+          jq -e 'type == "array"' <<< "$clusters" > /dev/null
+          if [ "$(jq 'length' <<< "$clusters")" -eq 0 ]; then
+            echo "$TARGET_ENVIRONMENT: cluster $cluster ausente; objetos Kubernetes da API ja nao existem."
+          else
+            aws eks update-kubeconfig --name "$cluster" --kubeconfig "$KUBECONFIG"
+            for resource in deployment/deploy-gerenciamento-api horizontalpodautoscaler/hpa-gerenciamento-api serviceaccount/gerenciamento-api; do
+              object="$(kubectl get "$resource" --namespace default --ignore-not-found=true -o json)"
+              if [ -n "$object" ]; then
+                echo "::error::$TARGET_ENVIRONMENT: $resource ainda existe. Conclua API destroy."
+                exit 1
+              fi
+            done
+            workloads="$(kubectl get pods,replicasets --namespace default -l app=gerenciamento-api -o json)"
+            if ! jq -e '.items | type == "array" and length == 0' <<< "$workloads" > /dev/null; then
+              echo "::error::$TARGET_ENVIRONMENT: pods/ReplicaSets da API presentes ou resposta invalida. Conclua API destroy."
+              exit 1
+            fi
+          fi
+
+      - name: Check authentication removal
+        id: dependencies
+        run: |
+          set -euo pipefail
+          name="mecanica-$TARGET_ENVIRONMENT-auth"
+          functions="$(aws lambda list-functions --query "Functions[?FunctionName=='$name'].FunctionName" --output json)"
+          if ! jq -e 'type == "array" and length == 0' <<< "$functions" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: Lambda $name encontrada ou resposta invalida. Conclua auth-destroy."
+            exit 1
+          fi
+
+          groups="$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=mecanica-$TARGET_ENVIRONMENT-auth" \
+            --query 'SecurityGroups[].{Id:GroupId,Egress:IpPermissionsEgress}' --output json)"
+          if ! jq -e 'type == "array" and all(.[]; (.Id | type == "string") and (.Egress | type == "array" and length == 0))' \
+            <<< "$groups" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: regras de saida da autenticacao remanescentes ou resposta invalida. Conclua auth-destroy."
+            exit 1
+          fi
+          group_ids="$(jq -r '.[].Id' <<< "$groups")"
+          for group in $group_ids; do
+            interfaces="$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$group" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output json)"
+            if ! jq -e 'type == "array" and length == 0' <<< "$interfaces" > /dev/null; then
+              echo "::error::$TARGET_ENVIRONMENT: ENIs da autenticacao no SG $group pendentes ou resposta invalida. Aguarde a liberacao e repita auth-destroy."
+              exit 1
+            fi
+          done
+
       - run: terraform init -backend-config="backends/$TARGET_ENVIRONMENT.hcl" -lockfile=readonly
       - run: terraform validate -no-color
       - run: terraform plan -destroy -var-file="environments/$TARGET_ENVIRONMENT.tfvars" -out=tfplan -no-color -lock-timeout=60s
@@ -114,12 +176,68 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.36.0
+      - name: Check API removal
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in hom|prd) ;; *) exit 1 ;; esac
+          test "$AWS_REGION" = us-east-1
+          cluster="mecanica-$TARGET_ENVIRONMENT-eks"
+          clusters="$(aws eks list-clusters --query "clusters[?@=='$cluster']" --output json)"
+          jq -e 'type == "array"' <<< "$clusters" > /dev/null
+          if [ "$(jq 'length' <<< "$clusters")" -eq 0 ]; then
+            echo "$TARGET_ENVIRONMENT: cluster $cluster ausente; objetos Kubernetes da API ja nao existem."
+          else
+            aws eks update-kubeconfig --name "$cluster" --kubeconfig "$KUBECONFIG"
+            for resource in deployment/deploy-gerenciamento-api horizontalpodautoscaler/hpa-gerenciamento-api serviceaccount/gerenciamento-api; do
+              object="$(kubectl get "$resource" --namespace default --ignore-not-found=true -o json)"
+              if [ -n "$object" ]; then
+                echo "::error::$TARGET_ENVIRONMENT: $resource ainda existe. Conclua API destroy."
+                exit 1
+              fi
+            done
+            workloads="$(kubectl get pods,replicasets --namespace default -l app=gerenciamento-api -o json)"
+            if ! jq -e '.items | type == "array" and length == 0' <<< "$workloads" > /dev/null; then
+              echo "::error::$TARGET_ENVIRONMENT: pods/ReplicaSets da API presentes ou resposta invalida. Conclua API destroy."
+              exit 1
+            fi
+          fi
+
+      - name: Check authentication removal
+        id: dependencies
+        run: |
+          set -euo pipefail
+          name="mecanica-$TARGET_ENVIRONMENT-auth"
+          functions="$(aws lambda list-functions --query "Functions[?FunctionName=='$name'].FunctionName" --output json)"
+          if ! jq -e 'type == "array" and length == 0' <<< "$functions" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: Lambda $name encontrada ou resposta invalida. Conclua auth-destroy."
+            exit 1
+          fi
+
+          groups="$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=mecanica-$TARGET_ENVIRONMENT-auth" \
+            --query 'SecurityGroups[].{Id:GroupId,Egress:IpPermissionsEgress}' --output json)"
+          if ! jq -e 'type == "array" and all(.[]; (.Id | type == "string") and (.Egress | type == "array" and length == 0))' \
+            <<< "$groups" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: regras de saida da autenticacao remanescentes ou resposta invalida. Conclua auth-destroy."
+            exit 1
+          fi
+          group_ids="$(jq -r '.[].Id' <<< "$groups")"
+          for group in $group_ids; do
+            interfaces="$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$group" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output json)"
+            if ! jq -e 'type == "array" and length == 0' <<< "$interfaces" > /dev/null; then
+              echo "::error::$TARGET_ENVIRONMENT: ENIs da autenticacao no SG $group pendentes ou resposta invalida. Aguarde a liberacao e repita auth-destroy."
+              exit 1
+            fi
+          done
+
       - name: Configure Kubernetes access
+        id: kubeconfig
         run: aws eks update-kubeconfig --region us-east-1 --name "mecanica-$TARGET_ENVIRONMENT-eks"
       - name: Remove initialization Job
         run: kubectl -n database-init delete job database-init --ignore-not-found=true --wait=true
       - name: Apply approved plan
         run: terraform -chdir=terraform apply -no-color -lock-timeout=60s tfplan
       - name: Remove temporary credentials
-        if: always()
+        if: ${{ always() && steps.dependencies.outcome == 'success' && steps.kubeconfig.outcome == 'success' }}
         run: kubectl -n database-init delete secret database-init-admin database-init-api database-init-auth --ignore-not-found=true
