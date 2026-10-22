@@ -1,17 +1,33 @@
-# Gerenciamento Mecanica — Banco
+# Gerenciamento Mecânica — Banco de dados
+
+**Estado em 21/10/2026:** fluxo de hom implantado, conferido e posteriormente destruído pelo mantenedor. E5/E6 encerradas no escopo acordado; prd não foi validado. [Encerramento e custos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md).
 
 RDS PostgreSQL privado em Terraform; SQL versionado e Job Kubernetes em manifesto próprio. Sem publicadores/wrappers/scripts de teste ou smokes. [Contrato v2](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md).
 
 | Fonte | Responsabilidade |
 |---|---|
 | terraform | RDS/rede, SSM v2, metadados/versões write-only de credenciais, ConfigMap/Secrets temporários |
-| sql/Init.sql | Esquema/seeds 1.0.0 e tabela schema_initialization, preservados |
+| sql/Init.sql | Esquema/seeds 1.0.0, marcador e duas tabelas de autenticação AE.3; banco vazio, sem migrations |
 | sql/ProvisionApiUser.sql, ProvisionAuthUser.sql | Usuários/grants já existentes |
 | k8s/database-init.yaml | Job estático, namespace reservado database-init |
 | k8s/database-access.yaml | Pod temporário de acesso SQL manual; não integra o provisionamento |
 | k8s/rds-ca.pem | Bundle público AWS us-east-1 para verify-full |
 
 Terraform 1.15.9/providers AWS 6.58.0, Kubernetes 3.3.0 e random 3.7.2, fixados no lock Windows/Linux. RDS postgres16.15/db.t3.micro/Single-AZ/20GiB gp3; nomes/backends/recursos atuais preservados. Base deve publicar SSM v2 e criar namespace antes do plan do banco. Não consumir estado remoto da base.
+
+## Arquitetura
+
+O banco não expõe HTTP, Swagger ou Postman. Esses contratos pertencem à [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema) e à [autenticação](https://github.com/pknfelps/GerenciamentoMecanicaServerless). Não há Dockerfile próprio: o Job usa a imagem oficial PostgreSQL. A modelagem completa, o ER e a justificativa da escolha estão em [Banco e modelo](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/BANCO_E_MODELO.md).
+
+## Execução local opcional
+
+Para desenvolver localmente, iniciar o PostgreSQL pelo Compose da API. Em banco vazio, a partir deste repositório, aplicar o SQL com o cliente padrão; ajustar porta, usuário e banco à configuração local:
+
+```bash
+psql -h localhost -p 5432 -U postgres -d postgres -W -X -v ON_ERROR_STOP=1 --single-transaction -f sql/Init.sql
+```
+
+Digitar a senha no prompt. O SQL contém seeds educacionais; não o reaplicar sobre dados existentes. A execução manual cria a tabela de inicialização, mas não seu registro operacional: esse registro pertence ao Job AWS. Não confundir a preparação local com execução do provisionamento remoto.
 
 ## Provisionamento
 
@@ -69,10 +85,25 @@ database-destroy também tem plan/approval/apply; remove Job antes do apply. RDS
 - [Configuração publicada](docs/MANIFESTO_BANCO.md)
 - [Migração](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/MIGRACAO_DECLARATIVA.md)
 
-Recuperação hom concluída em 2026-10-08 com plano aprovado: grupo de subnets recriado na VPC nova, RDS disponível, Job concluído e credenciais temporárias removidas. A retirada da opção de adoção está validada localmente e segue pelo fluxo de PR/pipeline do usuário.
+O fluxo declarativo, a inicialização e as credenciais foram conferidos em hom nas execuções registradas. A conferência SQL direta confirmou histórico e cliente Inativo. O [encerramento E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md) registra o descarte e os resíduos persistentes; não há endpoint RDS ativo a publicar neste README.
 
 ## Bloqueios no database-destroy — 17/10/2026
 
 O workflow verifica somente recursos Kubernetes da API e autenticação antes do plan e novamente antes das exclusões no apply. Não consulta Gateway, cuja remoção é exigida nos destroys de API/auth. Função auth, ENIs ou regras de saída remanescentes bloqueiam imediatamente. Erros de consulta não são tratados como ausência. A limpeza always dos Secrets só pode executar depois de as dependências serem aprovadas e o acesso Kubernetes estar configurado.
 
 Pré-requisito: bootstrap revisado aplicado e base com AmazonEKSViewPolicy em default para esta pipeline, preservando Edit somente em database-init. EKS permanece até a base ser descartada; API com zero réplicas ainda bloqueia enquanto seus recursos existirem. [Procedimento](docs/RDS_TERRAFORM.md). Esta alteração não automatiza recuperação do banco quando EKS/SSM já desapareceram.
+
+## Ordem operacional e evidências
+
+Provisionar base → banco/Job → API e autenticação → Gateway. Destruir Gateway → API e autenticação → banco → base; API e autenticação podem ser removidas independentemente depois do Gateway. Os bloqueios não coordenam execuções concorrentes. Bootstrap, artefatos, dashboards e demais recursos persistentes não pertencem a este destroy.
+
+- [Esquema e relacionamentos](docs/SCHEMA.md)
+- [Revisão documental E7](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/REVISAO_DOCUMENTACAO_E7_2026-10-21.md)
+- [Validação integrada e limites aceitos da E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md)
+
+As definições hom/prd são versionadas, mas isso não comprova operação em prd ou coexistência. Não há promessa de recuperação dos dados após destroy; o snapshot manual histórico identificado no encerramento tem ciclo de vida próprio.
+
+
+## Extra planejado — desafios de autenticação
+
+AE.3 revisada em 22/10/2026: [duas tabelas diretamente no Init.sql e índices comuns](docs/AE3_TABELAS_AUTENTICACAO_2026-10-22.md), sem migrations, CHECKs de negócio, unicidade por estado ou cascata. Limites usam customer_id; cliente inexistente encerra antes de qualquer gravação, com log sanitizado na autenticação. O Job/ConfigMap já carregam Init.sql e calculam seu novo hash; sem novos passos de workflow. Grants e operações C# permanecem pendentes. Nenhuma aplicação AWS; EmailFunction continua sem acesso ao banco. [Plano extra](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md).

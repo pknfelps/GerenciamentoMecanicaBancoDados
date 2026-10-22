@@ -116,3 +116,37 @@ CREATE TABLE order_services
     price_per_hour NUMERIC      NOT NULL,
     amount         INT          NOT NULL
 );
+-- AE.3: business validation and lifecycle are implemented by AuthFunction in C#.
+-- No business CHECKs, conditional uniqueness, FK or automatic deletion.
+CREATE TABLE customer_auth_challenges
+(
+    id              UUID PRIMARY KEY,
+    customer_id     UUID NOT NULL,
+    code_salt       BYTEA NOT NULL,
+    code_verifier   BYTEA NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    state           VARCHAR(50) NOT NULL DEFAULT 'Pending',
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    consumed_at     TIMESTAMPTZ,
+    invalidated_at  TIMESTAMPTZ
+);
+
+CREATE INDEX customer_auth_challenges_customer_created
+    ON customer_auth_challenges (customer_id, created_at);
+
+CREATE INDEX customer_auth_challenges_expiration
+    ON customer_auth_challenges (expires_at, id);
+
+-- Request-code must find the customer before writing a challenge or limit.
+CREATE TABLE customer_auth_request_limits
+(
+    customer_id       UUID PRIMARY KEY,
+    window_started_at TIMESTAMPTZ NOT NULL,
+    window_expires_at TIMESTAMPTZ NOT NULL,
+    request_count     INTEGER NOT NULL,
+    last_requested_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX customer_auth_request_limits_expiration
+    ON customer_auth_request_limits (window_expires_at, customer_id);
