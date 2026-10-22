@@ -8,7 +8,7 @@ RDS PostgreSQL privado em Terraform; SQL versionado e Job Kubernetes em manifest
 |---|---|
 | terraform | RDS/rede, SSM v2, metadados/versões write-only de credenciais, ConfigMap/Secrets temporários |
 | sql/Init.sql | Esquema/seeds 1.0.0, marcador e duas tabelas de autenticação AE.3; banco vazio, sem migrations |
-| sql/ProvisionApiUser.sql, ProvisionAuthUser.sql | Usuários/grants já existentes |
+| sql/ProvisionApiUser.sql, ProvisionAuthUser.sql | Usuários/grants mínimos; auth lê email e opera somente suas duas tabelas novas |
 | k8s/database-init.yaml | Job estático, namespace reservado database-init |
 | k8s/database-access.yaml | Pod temporário de acesso SQL manual; não integra o provisionamento |
 | k8s/rds-ca.pem | Bundle público AWS us-east-1 para verify-full |
@@ -101,9 +101,9 @@ Provisionar base → banco/Job → API e autenticação → Gateway. Destruir Ga
 - [Revisão documental E7](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/REVISAO_DOCUMENTACAO_E7_2026-10-21.md)
 - [Validação integrada e limites aceitos da E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md)
 
-As definições hom/prd são versionadas, mas isso não comprova operação em prd ou coexistência. Não há promessa de recuperação dos dados após destroy; o snapshot manual histórico identificado no encerramento tem ciclo de vida próprio.
+As definições hom/prd são versionadas, mas isso não comprova operação em prd ou coexistência. Não há promessa de recuperação dos dados após destroy. O mantenedor confirmou em 22/10/2026 a exclusão do snapshot manual histórico mecanica-hom-postgres-snapshot; registro por confirmação, sem nova consulta AWS pelo agente. Snapshots manuais têm ciclo de vida independente do destroy.
 
 
 ## Extra planejado — desafios de autenticação
 
-AE.3 revisada em 22/10/2026: [duas tabelas diretamente no Init.sql e índices comuns](docs/AE3_TABELAS_AUTENTICACAO_2026-10-22.md), sem migrations, CHECKs de negócio, unicidade por estado ou cascata. Limites usam customer_id; cliente inexistente encerra antes de qualquer gravação, com log sanitizado na autenticação. O Job/ConfigMap já carregam Init.sql e calculam seu novo hash; sem novos passos de workflow. Grants e operações C# permanecem pendentes. Nenhuma aplicação AWS; EmailFunction continua sem acesso ao banco. [Plano extra](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md).
+AE.3 revisada em 22/10/2026: [duas tabelas diretamente no Init.sql e índices comuns](docs/AE3_TABELAS_AUTENTICACAO_2026-10-22.md), sem migrations, CHECKs de negócio, unicidade por estado ou cascata. Limites usam customer_id; cliente inexistente encerra antes de qualquer gravação, com log sanitizado na autenticação. O Job/ConfigMap já carregam Init.sql e calculam seu novo hash; sem novos passos de workflow. Operações C# preparadas e testadas; [grants restritos preparados e validados](docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md). Na AE.3 resta a limpeza oportunista limitada; composição HTTP/envio na AE.6. Nenhuma aplicação AWS; EmailFunction continua sem acesso ao banco. [Plano extra](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md).

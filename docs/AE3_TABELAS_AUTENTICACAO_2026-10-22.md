@@ -1,6 +1,6 @@
 # AE.3 — Tabelas de autenticação do cliente
 
-**22/10/2026 — revisão do mantenedor aplicada e validada localmente.** Duas tabelas diretamente no [Init.sql](../sql/Init.sql), para criação do banco vazio. Pasta migrations removida. Sem aplicação AWS; o snapshot manual histórico não foi alterado.
+**22/10/2026 — revisão do mantenedor aplicada e validada localmente.** Duas tabelas diretamente no [Init.sql](../sql/Init.sql), para criação do banco vazio. Pasta migrations removida. Sem aplicação AWS pelo agente. O mantenedor confirmou posteriormente, em 22/10/2026, a exclusão do snapshot manual histórico mecanica-hom-postgres-snapshot; pendência encerrada por confirmação, sem nova consulta AWS pelo agente.
 
 O banco demonstrativo é descartado com o ambiente. Novo provisionamento cria o esquema/seeds a partir do Init.sql; não há mecanismo de migração de dados entre revisões. O código existente do Terraform normaliza LF, calcula o novo SHA-256 e entrega o SQL ao ConfigMap. O Job existente cria o esquema e grava o marcador na mesma transação. Nenhum passo de workflow/Job foi acrescentado.
 
@@ -53,7 +53,7 @@ psql -h localhost -p 5432 -U postgres -d postgres -W -X -v ON_ERROR_STOP=1 --sin
 
 Digitar senha no prompt. Não reaplicar Init.sql para adaptar banco com dados. O Job grava versão 1.0.0 e o hash atual do arquivo; mesmo marcador permite reexecução sem reinicializar. Hash de outra revisão é recusado; o projeto recria o banco pelo ciclo de destroy/provisionamento autorizado.
 
-Grants existentes preservados. mecanica_auth ainda precisa receber SELECT email de customers e DML restrito nas tabelas novas no próximo passo da AE.3. A API e a EmailFunction não recebem acesso novo nesta revisão. Publicação/aplicação AWS continuam posteriores.
+[Grants preparados e validados localmente](AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md): mecanica_auth recebe SELECT email de customers e DML restrito nas tabelas novas. A API e a EmailFunction não recebem acesso novo nesta revisão. Publicação/aplicação AWS continuam posteriores.
 
 ## Validação local atual
 
@@ -66,7 +66,7 @@ PostgreSQL 16.15 em Docker descartável, sem rede externa, porta publicada ou vo
 - O Job recusou o hash antigo, sem alterar o marcador ou os dados.
 - Estado final: duas tabelas novas vazias, doze tabelas totais, marcador com o hash atual. Container removido ao final.
 
-Evidências locais ignoradas em artifacts/ae3/review no repositório da API. A conferência anterior de 34 constraints/migração foi substituída e não certifica o SQL atual. AE.3 permanece parcial até grants/operações de persistência. A resposta antecipada/log do novo fluxo e sua ausência de gravações serão comprovadas pelos testes C# da autenticação, sem tratar SQL direto como teste da Lambda.
+Evidências locais ignoradas em artifacts/ae3/review no repositório da API. A conferência anterior de 34 constraints/migração foi substituída e não certifica o SQL atual. Operações C# e grants preparados e validados localmente; AE.3 permanece parcial até limpeza oportunista limitada. A resposta antecipada/log do novo fluxo e sua ausência de gravações serão comprovadas pelos testes C# da autenticação, sem tratar SQL direto como teste da Lambda.
 
 ## AE.3 — operações transacionais preparadas
 
@@ -74,6 +74,10 @@ Componentes C# de criação/substituição Pending, ativação Ready, invalidaç
 
 Advisory lock transacional por cliente, locks das linhas novas e relógio UTC do PostgreSQL; sem FOR UPDATE/escrita em customers, constraints de negócio, migrations ou transação aberta durante envio. Tentativa incorreta/documento divergente de Ready válido é persistida com commit; quinta invalida. Assinatura ocorre antes do consumo/commit e token só retorna após confirmação. Substituído/encerrado não é reativado. Cancelamento/falha provoca rollback preservando a exceção original.
 
-Restore/build Release, regressão de 309 testes (40 novos: 11 regras C# e 29 PostgreSQL), zero falhas/ignorados. Testes locais usam PostgreSQL 16.15/Testcontainers e grants explicitamente preparados na fixture; não comprovam grants de produção ainda não alterados. Detalhes, nomes de testes e limites: [operações transacionais](https://github.com/pknfelps/GerenciamentoMecanicaServerless/blob/develop/docs/AE3_OPERACOES_TRANSACIONAIS.md).
+Restore/build Release, regressão de 309 testes (40 novos: 11 regras C# e 29 PostgreSQL), zero falhas/ignorados. Testes locais usam PostgreSQL 16.15/Testcontainers e grants explicitamente preparados na fixture; não substituem a conferência separada do SQL real, agora registrada em [permissões da autenticação](AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md). Detalhes, nomes de testes e limites: [operações transacionais](https://github.com/pknfelps/GerenciamentoMecanicaServerless/blob/develop/docs/AE3_OPERACOES_TRANSACIONAIS.md).
 
-O store ainda não está ligado ao handler/casos de uso HTTP, e não chama EmailFunction. Isso permanece na AE.6. Resultado de criação contém código/e-mail somente para uso interno e não deve ser serializado ou registrado no HTTP/log; a resposta pública será montada separadamente. Grants e limpeza oportunista continuam pendentes na AE.3. Nenhuma alteração AWS, SQL/grants, IAM ou workflows nesta preparação.
+O store ainda não está ligado ao handler/casos de uso HTTP, e não chama EmailFunction. Isso permanece na AE.6. Resultado de criação contém código/e-mail somente para uso interno e não deve ser serializado ou registrado no HTTP/log; a resposta pública será montada separadamente. Grants preparados e validados localmente; resta limpeza oportunista na AE.3. Nenhuma alteração AWS, SQL/grants, IAM ou workflows nesta preparação.
+
+## Reconferência PostgreSQL local — 22/10/2026
+
+[Registro consolidado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/VALIDACAO_AE3_POSTGRESQL_LOCAL_2026-10-22.md): Job atual inicializa banco vazio, reconhece repetição e recusa hash divergente/banco não vazio sem marcador, sem alterar dados. Estrutura/seeds/instantes e grants reais conferidos em PostgreSQL 16.15 descartável. Nova regressão Serverless: 309 testes aprovados, zero falhas/ignorados; restore/build Release sem avisos/erros. Sem migração, regras de negócio no SQL, alteração de produção ou acesso AWS. Limpeza oportunista continua pendente e não foi apresentada como validada.
