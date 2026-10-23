@@ -20,7 +20,7 @@ versão e hash atuais antes de provisionar os usuários/grants. Não há SQLs de
   PBKDF2-SHA256, 100.000 iterações, salt de 16 bytes e hash de 32 bytes.
 - `customers.status`: `Active` (Ativo) ou `Inactive` (Inativo), obrigatório,
   padrão `Active`. A API deve sempre criar clientes ativos e não expor edição
-  desse campo no PATCH genérico. A Lambda consultará esse valor junto do UUID
+  desse campo no PATCH genérico. A Lambda consulta esse valor junto do UUID
   e documento. Documento permanece canônico, mascarado e UNIQUE, aceitando
   CPF/CNPJ conforme validação do domínio.
 - `orders.status` mantém o estado atual. `date_created`, `date_finished` e
@@ -53,7 +53,7 @@ A pedido do usuário, o SQL não contém os CONSTRAINT nomeados de roles, status
 sequência, tempo ou transições, nem o índice do histórico. As chaves primárias,
 FKs, NOT NULL e UNIQUE do esquema anterior permanecem; o novo histórico mantém
 `id` como chave primária. A validação das regras de domínio e a prevenção de
-sequências duplicadas passam à aplicação na E4. Sem índice, a consulta ao
+sequências duplicadas são implementadas na aplicação. Sem índice, a consulta ao
 histórico pode exigir varredura/ordenação; reavaliar com dados e métricas reais.
 
 `order_status_history.order_id` não tem FK para `orders`. Isso é intencional:
@@ -70,8 +70,9 @@ permanência da OS. Portanto a aplicação é responsável por:
    `(order_id, sequence)` nem CHECK de transições.
 4. Rejeitar instantes regressivos, aceitar instantes iguais com desempate pela
    sequência e não inserir eventos para OS inexistentes/excluídas.
-5. Não atualizar/apagar o histórico ao excluir a OS. As permissões da futura
-   credencial da API devem refletir o uso de inserção/leitura do histórico.
+5. Não atualizar/apagar o histórico ao excluir a OS. A credencial atual da API
+   possui SELECT/INSERT/UPDATE/DELETE nas tabelas de domínio, incluindo o histórico;
+   a preservação é garantida pelo comportamento da aplicação, não por grants append-only.
 
 Abertura deriva do evento sequence=1; conclusão deriva de Finished com
 ServiceCompleted; entrega deriva de Delivered. BudgetRejected fica fora do tempo
@@ -84,15 +85,34 @@ A API foi adaptada ao esquema: status Active/Inactive, perfis Admin/Mechanic e
 projeções pelo histórico estão implementados. A consolidação E4 protege a leitura
 e decisão por bloqueio transacional da OS/material, torna todo DELETE atômico e
 representa conclusão/duração ausentes com null. Não modifica este esquema ou seeds.
-Publicar a revisão correspondente da API/OpenAPI e atualizar o Gateway; a validação
-local não substitui a inspeção SQL de histórico e Inativo em hom ainda pendente.
+A inspeção SQL direta de histórico e cliente Inativo foi concluída em hom, junto
+à validação HTTP integrada. Prd não foi validado. O ambiente foi posteriormente
+destruído; a existência de evidências não significa disponibilidade atual.
 
 A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
 1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.
 SQLs de smoke e scripts de teste foram removidos conforme ADR 008. As evidencias
-anteriores de hom permanecem no acompanhamento da Fase 3; a execucao do fluxo
-declarativo novo ainda depende de PR, planos aprovados e pipelines.
+de hom e do fluxo declarativo estão consolidadas no [encerramento E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md). Novas execuções continuam exigindo planos aprovados e pipelines.
 
 O conteudo entregue ao ConfigMap usa LF, como o arquivo versionado no Git;
 Terraform calcula SHA-256 desse mesmo conteudo. Isso preserva o marcador entre
-checkouts Windows/Linux, sem alterar Init.sql nem dados existentes.
+checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. A revisão AE.3 acrescenta as duas tabelas ao próprio Init.sql e, portanto, altera seu hash esperado.
+
+## Modelo físico e limites
+
+O Init.sql possui doze tabelas: users, customers, vehicles, orders, order_status_history, stock, catalog, order_materials, order_services, schema_initialization, customer_auth_challenges e customer_auth_request_limits. [ER completo](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/diagramas/DADOS.md) e [justificativa PostgreSQL/RDS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/BANCO_E_MODELO.md).
+
+Clientes/veículos se relacionam pelas chaves naturais document/vehicle_license_plate. Itens de OS guardam snapshots dos dados de material/serviço; seus ids são FKs para stock/catalog, sem PK ou unicidade composta declarada. O histórico tem PK própria, sem FK para orders. schema_initialization não tem PK e não recebe grants de API/auth. Não há exclusão em cascata declarada, CHECK de estados ou UNIQUE por sequência do histórico. Não atribuir ao banco garantias implementadas apenas na aplicação.
+
+A autenticação tem SELECT restrito às colunas id/name/document/status/email de customers e DML somente nas duas tabelas customer_auth_challenges/customer_auth_request_limits. O usuário da API possui DML nas nove tabelas de domínio; não administra o marcador. A execução do Job e a conferência de grants preservam essa separação.
+
+
+## AE.3 — desafios e limites no Init.sql
+
+As duas tabelas fazem parte da criação completa do banco vazio. Não há migrations, SQL adicional ou integração incremental pendente. Terraform entrega o Init.sql ao ConfigMap e calcula seu SHA-256; o Job existente cria as doze tabelas/seeds e grava o novo hash no marcador. Reexecução com marcador idêntico continua preservando os dados. Banco de outra revisão/hash é recusado; o projeto usa destroy e nova inicialização, sem adaptação automática.
+
+customer_auth_challenges guarda UUID próprio e do cliente, salt/verificador binários, instantes, estado e tentativas. customer_auth_request_limits usa customer_id como PK e guarda janela, quantidade e última solicitação. Chaves primárias, tipos, nulabilidade/defaults e três índices comuns; sem CHECKs, UNIQUE condicionado ao estado, FK de cliente ou cascata. Toda regra de estado, validade, tamanho criptográfico, tentativas, substituição e consumo pertence ao C# da autenticação, que já usa transações/locks/operações condicionais no código preparado AE.3/AE.6.
+
+Cliente inexistente é identificado na consulta inicial e retorna sem gravar desafio/limite/auditoria ou executar limpeza/envio; registrar a tentativa somente no log sanitizado. Limites só são persistidos para cliente encontrado/elegível, pelo UUID, sem HMAC/HKDF do documento. Nenhum grant foi ampliado nesta etapa. [DDL atual, decisões e conferência local](AE3_TABELAS_AUTENTICACAO_2026-10-22.md).
+
+AE.9 — 23/10/2026: Init.sql e ProvisionApiUser.sql/ProvisionAuthUser.sql reais executados em banco Docker vazio/descartável na conferência conjunta de código/JWT/API/envio. Grants restritos de ambas as aplicações utilizados. Nenhuma mudança de SQL/seeds/grants ou migrations nesta etapa; sem RDS/AWS. [Resultados e limites](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md).
