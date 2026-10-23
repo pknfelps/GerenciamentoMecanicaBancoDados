@@ -26,4 +26,4 @@ PostgreSQL 16.15 em Docker descartável, sem portas publicadas, rede externa ou 
 - Dez operações recusadas com SQLSTATE 42501: SELECT phone; UPDATE/DELETE/INSERT customers; SELECT users/orders/schema_initialization; TRUNCATE da tabela de desafios; CREATE public; ALTER da tabela de desafios.
 - Container removido ao final. Evidências locais em artifacts/ae3/grants no repositório da API, fora do Git. Não foram criados scripts operacionais ou suítes novas de testes.
 
-Essa conferência valida o SQL real de provisionamento localmente, separadamente dos 309 testes C# da preparação anterior. Não comprova aplicação no RDS nem composição do novo fluxo HTTP. Na AE.3 resta a limpeza oportunista limitada; ligação HTTP/envio permanece na AE.6.
+Essa conferência valida o SQL real de provisionamento localmente, separadamente dos 309 testes C# da preparação anterior. Não comprova aplicação no RDS nem composição do novo fluxo HTTP. [Limpeza oportunista posteriormente implementada e validada localmente](https://github.com/pknfelps/GerenciamentoMecanicaServerless/blob/develop/docs/AE3_LIMPEZA_EXPIRADOS.md); AE.3 concluída no escopo local; ligação HTTP/envio permanece na AE.6.
