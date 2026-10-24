@@ -96,7 +96,7 @@ Novas execuções continuam exigindo planos aprovados e pipelines.
 
 O conteudo entregue ao ConfigMap usa LF, como o arquivo versionado no Git;
 Terraform calcula SHA-256 desse mesmo conteudo. Isso preserva o marcador entre
-checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. A revisão AE.3 acrescenta as duas tabelas ao próprio Init.sql e, portanto, altera seu hash esperado.
+checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. O hash esperado é calculado a partir do Init.sql completo, incluindo as duas tabelas de autenticação.
 
 ## Modelo físico e limites
 

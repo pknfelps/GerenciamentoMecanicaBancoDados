@@ -4,6 +4,23 @@ RDS PostgreSQL privado provisionado por Terraform, com esquema/seeds SQL e Job K
 
 ## Fontes e arquitetura
 
+~~~mermaid
+flowchart LR
+    BASE["Base: rede e EKS / SSM"] -.-> TF
+    subgraph REPO["Repositorio do banco"]
+        TF["Terraform"]
+        SQL["Init.sql e scripts de grants"] --> JOB["Job database-init"]
+        TF -.->|ConfigMap e Secrets temporarios| JOB
+        TF --> META["Catalogo SSM database/v2"]
+    end
+    TF -->|provisiona| DB[("RDS PostgreSQL privado")]
+    JOB -->|esquema e grants / TLS| DB
+    API["API / mecanica_api"] -->|TLS VerifyFull| DB
+    AUTH["AuthFunction / mecanica_auth"] -->|TLS VerifyFull| DB
+    META -.->|metadados| API
+    META -.->|metadados| AUTH
+~~~
+
 | Fonte | Responsabilidade |
 |---|---|
 | [terraform](terraform) | RDS/rede, credenciais, catálogo SSM database/v2 e entradas temporárias do Job |
