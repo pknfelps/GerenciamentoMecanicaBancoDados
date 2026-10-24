@@ -1,3 +1,14 @@
+# Local implementation plans and development checklists
+[Pp][Ll][Aa][Nn]*.md
+*_PLANEJAD[OA].md
+*_planejad[oa].md
+/docs/plano-*/
+/docs/planos/
+/docs/plans/
+/docs/implementation-plans/
+/docs/ROTEIRO_VALIDACAO_*.md
+/docs/MIGRACAO_DECLARATIVA.md
+
 # Arquivos locais e segredos
 .env
 .env.*
@@ -37,3 +48,8 @@ artifacts/
 # Plano salvo gerado localmente (artefato de workflow, nunca fonte).
 /terraform/tfplan
 /terraform/tfplan.txt
+
+# Detailed procedures, development reports and evidence stay local.
+/docs/*.md
+!/docs/SCHEMA.md
+/docs/origem-fase*.json
