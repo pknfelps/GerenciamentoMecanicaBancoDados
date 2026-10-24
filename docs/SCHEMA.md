@@ -92,11 +92,11 @@ destruído; a existência de evidências não significa disponibilidade atual.
 A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
 1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.
 SQLs de smoke e scripts de teste foram removidos conforme ADR 008. As evidencias
-de hom e do fluxo declarativo estão consolidadas no [encerramento E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md). Novas execuções continuam exigindo planos aprovados e pipelines.
+Novas execuções continuam exigindo planos aprovados e pipelines.
 
 O conteudo entregue ao ConfigMap usa LF, como o arquivo versionado no Git;
 Terraform calcula SHA-256 desse mesmo conteudo. Isso preserva o marcador entre
-checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. A revisão AE.3 acrescenta as duas tabelas ao próprio Init.sql e, portanto, altera seu hash esperado.
+checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. O hash esperado é calculado a partir do Init.sql completo, incluindo as duas tabelas de autenticação.
 
 ## Modelo físico e limites
 
@@ -106,13 +106,10 @@ Clientes/veículos se relacionam pelas chaves naturais document/vehicle_license_
 
 A autenticação tem SELECT restrito às colunas id/name/document/status/email de customers e DML somente nas duas tabelas customer_auth_challenges/customer_auth_request_limits. O usuário da API possui DML nas nove tabelas de domínio; não administra o marcador. A execução do Job e a conferência de grants preservam essa separação.
 
-
-## AE.3 — desafios e limites no Init.sql
+## Desafios e limites no Init.sql
 
 As duas tabelas fazem parte da criação completa do banco vazio. Não há migrations, SQL adicional ou integração incremental pendente. Terraform entrega o Init.sql ao ConfigMap e calcula seu SHA-256; o Job existente cria as doze tabelas/seeds e grava o novo hash no marcador. Reexecução com marcador idêntico continua preservando os dados. Banco de outra revisão/hash é recusado; o projeto usa destroy e nova inicialização, sem adaptação automática.
 
-customer_auth_challenges guarda UUID próprio e do cliente, salt/verificador binários, instantes, estado e tentativas. customer_auth_request_limits usa customer_id como PK e guarda janela, quantidade e última solicitação. Chaves primárias, tipos, nulabilidade/defaults e três índices comuns; sem CHECKs, UNIQUE condicionado ao estado, FK de cliente ou cascata. Toda regra de estado, validade, tamanho criptográfico, tentativas, substituição e consumo pertence ao C# da autenticação, que já usa transações/locks/operações condicionais no código preparado AE.3/AE.6.
+customer_auth_challenges guarda UUID próprio e do cliente, salt/verificador binários, instantes, estado e tentativas. customer_auth_request_limits usa customer_id como PK e guarda janela, quantidade e última solicitação. Chaves primárias, tipos, nulabilidade/defaults e três índices comuns; sem CHECKs, UNIQUE condicionado ao estado, FK de cliente ou cascata. Toda regra de estado, validade, tamanho criptográfico, tentativas, substituição e consumo pertence ao C# da autenticação, que já usa transações/locks/operações condicionais no código da autenticação.
 
-Cliente inexistente é identificado na consulta inicial e retorna sem gravar desafio/limite/auditoria ou executar limpeza/envio; registrar a tentativa somente no log sanitizado. Limites só são persistidos para cliente encontrado/elegível, pelo UUID, sem HMAC/HKDF do documento. Nenhum grant foi ampliado nesta etapa. [DDL atual, decisões e conferência local](AE3_TABELAS_AUTENTICACAO_2026-10-22.md).
-
-AE.9 — 23/10/2026: Init.sql e ProvisionApiUser.sql/ProvisionAuthUser.sql reais executados em banco Docker vazio/descartável na conferência conjunta de código/JWT/API/envio. Grants restritos de ambas as aplicações utilizados. Nenhuma mudança de SQL/seeds/grants ou migrations nesta etapa; sem RDS/AWS. [Resultados e limites](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md).
+Cliente inexistente é identificado na consulta inicial e retorna sem gravar desafio/limite/auditoria ou executar limpeza/envio; registrar a tentativa somente no log sanitizado. Limites só são persistidos para cliente encontrado/elegível, pelo UUID, sem HMAC/HKDF do documento.
