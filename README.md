@@ -64,7 +64,7 @@ kubectl kustomize k8s
 | [database-destroy](.github/workflows/database-destroy.yml) | Verifica API/auth e resíduos antes do plano/aplicação de descarte |
 | [aws-oidc-check](.github/workflows/aws-oidc-check.yml) | Diagnóstico de autenticação OIDC |
 
-Workflows manuais, develop/hom e main/prd; AWS_ROLE_ARN nos Environments. Região us-east-1, conta 121754142617. A base deve existir antes do plan do banco. Estados separados por ambiente, locking e aplicação exclusiva do plano aprovado.
+database-provision inicia automaticamente por push/merge em develop/hom ou main/prd, mantendo plano salvo → aprovação → apply. O disparo manual permanece disponível; destroy e diagnóstico continuam manuais. AWS_ROLE_ARN nos Environments. Região us-east-1, conta 121754142617. A base deve existir antes do plan do banco. Estados separados por ambiente, locking e aplicação exclusiva do plano aprovado.
 
 Passwords usam recursos ephemeral/write-only; não publicar valores, estados ou TF_LOG. O Job remove suas três credenciais Kubernetes temporárias também em falha. Inicializa somente banco vazio; marcador incompatível interrompe sem reset ou migração automática.
 

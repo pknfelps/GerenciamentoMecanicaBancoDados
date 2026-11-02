@@ -1,7 +1,9 @@
 name: database-provision
-run-name: database-provision / ${{ inputs.environment }} / ${{ github.ref_name }}
+run-name: database-provision / ${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }} / ${{ github.ref_name }}
 
 on:
+  push:
+    branches: [develop, main]
   workflow_dispatch:
     inputs:
       environment:
@@ -13,11 +15,11 @@ on:
 
 permissions: {}
 concurrency:
-  group: database-${{ inputs.environment }}
+  group: database-${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }}
   cancel-in-progress: false
 
 env:
-  TARGET_ENVIRONMENT: ${{ inputs.environment }}
+  TARGET_ENVIRONMENT: ${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }}
   AWS_REGION: us-east-1
   AWS_PAGER: ''
   TF_IN_AUTOMATION: 'true'
@@ -29,7 +31,7 @@ jobs:
   plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }}
     permissions:
       contents: read
       id-token: write
@@ -74,7 +76,7 @@ jobs:
   approval:
     needs: plan
     runs-on: ubuntu-24.04
-    environment: ${{ format('{0}-approval', inputs.environment) }}
+    environment: ${{ format('{0}-approval', inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd')) }}
     permissions: {}
     steps:
       - run: echo 'Plano desta execucao aprovado pelo Environment protegido.'
@@ -83,7 +85,7 @@ jobs:
     needs: [plan, approval]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }}
     permissions:
       contents: read
       actions: read
