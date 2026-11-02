@@ -85,9 +85,11 @@ A API foi adaptada ao esquema: status Active/Inactive, perfis Admin/Mechanic e
 projeções pelo histórico estão implementados. A consolidação E4 protege a leitura
 e decisão por bloqueio transacional da OS/material, torna todo DELETE atômico e
 representa conclusão/duração ausentes com null. Não modifica este esquema ou seeds.
-A inspeção SQL direta de histórico e cliente Inativo foi concluída em hom, junto
-à validação HTTP integrada. Prd não foi validado. O ambiente foi posteriormente
-destruído; a existência de evidências não significa disponibilidade atual.
+A inspeção SQL direta de histórico e cliente Inativo foi concluída em hom. Em
+02/11/2026, os fluxos HTTP de autenticação e OS foram conferidos em hom e prd,
+com as duas instâncias RDS disponíveis, privadas e criptografadas. SQL direto,
+retenção após DELETE e descarte não foram repetidos em prd. A conferência é
+pontual e não garante disponibilidade futura ou recuperação dos dados.
 
 A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
 1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.
