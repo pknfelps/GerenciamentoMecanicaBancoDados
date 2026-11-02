@@ -1,11 +1,10 @@
 resource "aws_db_subnet_group" "database" {
   name        = "${local.name_prefix}-database"
   description = "Subnets isoladas do RDS PostgreSQL ${var.environment}"
-  subnet_ids  = local.base_exports["database-subnet-ids"]
+  subnet_ids  = jsondecode(local.base_exports["database-subnet-ids"])
 
   tags = { Name = "${local.name_prefix}-database" }
 
-  depends_on = [terraform_data.base_release]
 }
 
 # Nenhuma regra de egress é criada. O provider remove o egress amplo que a AWS
@@ -17,7 +16,6 @@ resource "aws_security_group" "database" {
 
   tags = { Name = "${local.name_prefix}-postgres" }
 
-  depends_on = [terraform_data.base_release]
 }
 
 # API e Job usam atualmente o mesmo SG do cluster EKS. O set evita regra duplicada.

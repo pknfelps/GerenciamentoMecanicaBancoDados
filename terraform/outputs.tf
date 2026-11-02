@@ -25,7 +25,10 @@ output "admin_secret_arn" {
   value       = aws_db_instance.database.master_user_secret[0].secret_arn
 }
 
-output "base_dependency" {
-  description = "Referencia exata da release consumida para o futuro manifesto do banco."
-  value       = local.base_context.dependencies.base
+output "cluster_name" {
+  value = local.base_exports["cluster-name"]
+}
+
+output "configuration_parameters" {
+  value = { for field, parameter in aws_ssm_parameter.configuration : field => parameter.name }
 }

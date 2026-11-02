@@ -1,17 +1,18 @@
 locals {
-  name_prefix = "mecanica-${var.environment}"
-
-  # O snapshot é produzido pelo consumidor que verifica contrato, recursos e role real.
-  base_context = jsondecode(file(var.base_context_file))
-  base_release = local.base_context.manifest
-  base_exports = local.base_release.exports
-
+  initialization_sql        = replace(file("${path.module}/../sql/Init.sql"), "\r\n", "\n")
+  initialization_sql_sha256 = sha256(local.initialization_sql)
+  name_prefix               = "mecanica-${var.environment}"
+  base_fields = toset([
+    "vpc-id", "database-subnet-ids", "cluster-name", "init-namespace",
+    "api-security-group-id", "auth-security-group-id", "init-security-group-id"
+  ])
+  base_exports = { for field, parameter in data.aws_ssm_parameter.base : field => nonsensitive(parameter.value) }
+  # Preserva as chaves/enderecos das regras ja existentes no estado.
   postgres_sources = toset([
     local.base_exports["api-security-group-id"],
     local.base_exports["auth-security-group-id"],
     local.base_exports["init-security-group-id"],
   ])
-
   common_tags = {
     Project     = "mecanica"
     Environment = var.environment
@@ -20,39 +21,8 @@ locals {
   }
 }
 
-# Esta pré-condição falha antes de criar qualquer recurso quando o arquivo foi
-# trocado, pertence a outro ambiente ou não representa a release requerida.
-resource "terraform_data" "base_release" {
-  input = {
-    parameter     = local.base_context.parameter
-    ssm_version   = local.base_context.ssmVersion
-    deployment_id = local.base_release.deploymentId
-    generation    = local.base_release.generation
-    source_commit = local.base_release.source.commit
-  }
-
-  lifecycle {
-    precondition {
-      condition = try(
-        local.base_context.parameter == "/mecanica/${var.environment}/base/v1/database-release" &&
-        local.base_context.ssmVersion > 0 &&
-        startswith(local.base_release.schemaVersion, "1.") &&
-        tonumber(split(".", local.base_release.schemaVersion)[1]) >= 1 &&
-        local.base_release.environment == var.environment &&
-        local.base_release.component == "base" &&
-        local.base_release.accountId == "121754142617" &&
-        local.base_release.region == var.aws_region &&
-        local.base_release.status == "ready" &&
-        local.base_release.readinessProfile == "database" &&
-        length(local.base_exports["database-subnet-ids"]) == 2 &&
-        length(distinct(local.base_exports["database-subnet-ids"])) == 2 &&
-        local.base_context.dependencies.base.parameter == local.base_context.parameter &&
-        local.base_context.dependencies.base.deploymentId == local.base_release.deploymentId &&
-        local.base_context.dependencies.base.generation == local.base_release.generation &&
-        local.base_context.dependencies.base.sourceCommit == local.base_release.source.commit,
-        false
-      )
-      error_message = "Snapshot da base invalido; capture e confira database-release do ambiente novamente."
-    }
-  }
+data "aws_ssm_parameter" "base" {
+  for_each        = local.base_fields
+  name            = "/mecanica/${var.environment}/base/v2/${each.key}"
+  with_decryption = false
 }
