@@ -38,7 +38,7 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO mecanica_api', current_database()
 \gexec
 GRANT USAGE ON SCHEMA public TO mecanica_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
-    customers, vehicles, orders, order_status_history,
+    customers, customer_access_sync, vehicles, orders, order_status_history,
     stock, catalog, order_materials, order_services
 TO mecanica_api;
 

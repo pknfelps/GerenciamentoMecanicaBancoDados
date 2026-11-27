@@ -1,4 +1,4 @@
--- Operational schema 2.0.0: initialize an empty database in one transaction.
+-- Operational schema 2.1.0: initialize an empty database in one transaction.
 -- No automatic reset or incremental migration. Demo orders are created via the API.
 CREATE TABLE customers
 (
@@ -12,6 +12,15 @@ CREATE TABLE customers
 
 INSERT INTO customers(id, name, document, phone, email)
 VALUES ('445b6ba5-523b-426f-9aaa-164754c203ca', 'Fulano', '662.119.730-63', '(11) 91234-5678', 'fulano@gmail.com');
+
+-- Retain the revision after deletion so a pending access revocation can be retried.
+CREATE TABLE customer_access_sync
+(
+    customer_id UUID PRIMARY KEY,
+    revision    BIGINT NOT NULL CHECK (revision > 0),
+    operation   VARCHAR(6) NOT NULL CHECK (operation IN ('create', 'update', 'revoke')),
+    pending     BOOLEAN NOT NULL
+);
 
 CREATE TABLE vehicles
 (
