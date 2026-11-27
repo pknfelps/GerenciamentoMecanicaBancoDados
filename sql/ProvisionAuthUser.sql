@@ -1,4 +1,4 @@
--- Run after Init.sql, connected as mecanica_admin to the mecanica database.
+-- Run after InitIdentity.sql, connected as mecanica_admin to mecanica_identity.
 -- AUTH_DB_PASSWORD is supplied to psql by the Job; never put it in this file.
 \getenv auth_password AUTH_DB_PASSWORD
 SELECT 1 / (length(:'auth_password') >= 32)::integer;
@@ -32,18 +32,16 @@ SELECT format(
 
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM mecanica_auth', current_database())
 \gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
 REVOKE ALL PRIVILEGES ON SCHEMA public FROM mecanica_auth;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM mecanica_auth;
--- Table-level REVOKE does not remove existing column-level grants.
-REVOKE ALL PRIVILEGES (id, name, document, phone, email, status)
-ON TABLE customers FROM mecanica_auth;
 
 SELECT format('GRANT CONNECT ON DATABASE %I TO mecanica_auth', current_database())
 \gexec
 GRANT USAGE ON SCHEMA public TO mecanica_auth;
-GRANT SELECT (id, name, document, status, email) ON TABLE customers TO mecanica_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
-    customer_auth_challenges, customer_auth_request_limits
+    users, customer_access, customer_auth_challenges, customer_auth_request_limits
 TO mecanica_auth;
 
--- No customer writes/phone, orders, internal users, initialization marker or DDL.
+-- No grants on the operational database, initialization marker or DDL.

@@ -4,12 +4,20 @@ resource "kubernetes_config_map_v1" "initialization" {
     namespace = local.base_exports["init-namespace"]
   }
   data = {
-    PGHOST                  = aws_db_instance.database.address
-    SQL_SHA256              = local.initialization_sql_sha256
-    "Init.sql"              = local.initialization_sql
-    "ProvisionApiUser.sql"  = file("${path.module}/../sql/ProvisionApiUser.sql")
-    "ProvisionAuthUser.sql" = file("${path.module}/../sql/ProvisionAuthUser.sql")
-    "rds-ca.pem"            = file("${path.module}/../k8s/rds-ca.pem")
+    PGHOST                       = aws_db_instance.database.address
+    PGDATABASE                   = aws_db_instance.database.db_name
+    SCHEMA_VERSION               = local.schema_version
+    SQL_SHA256                   = local.initialization_sql_sha256
+    IDENTITY_DATABASE            = local.identity_database_name
+    IDENTITY_SCHEMA_VERSION      = local.identity_schema_version
+    IDENTITY_SQL_SHA256          = local.identity_initialization_sql_sha256
+    "Init.sql"                   = local.initialization_sql
+    "InitIdentity.sql"           = local.identity_initialization_sql
+    "InitializeDatabase.sql"     = file("${path.module}/../sql/InitializeDatabase.sql")
+    "CreateIdentityDatabase.sql" = file("${path.module}/../sql/CreateIdentityDatabase.sql")
+    "ProvisionApiUser.sql"       = file("${path.module}/../sql/ProvisionApiUser.sql")
+    "ProvisionAuthUser.sql"      = file("${path.module}/../sql/ProvisionAuthUser.sql")
+    "rds-ca.pem"                 = file("${path.module}/../k8s/rds-ca.pem")
   }
 }
 

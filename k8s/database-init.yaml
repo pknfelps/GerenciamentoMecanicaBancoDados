@@ -32,25 +32,17 @@ spec:
           args:
             - |
               trap 'unset PGPASSWORD API_DB_PASSWORD AUTH_DB_PASSWORD' EXIT
-              tables="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")"
-              marker="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.schema_initialization') IS NOT NULL")"
-              if [ "$marker" = t ]; then
-                result="$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN count(*) = 1 AND min(version) = '$SCHEMA_VERSION' AND min(sha256) = '$SQL_SHA256' THEN 'match' ELSE 'mismatch' END FROM schema_initialization")"
-                if [ "$result" != match ]; then
-                  echo 'Existing schema has a different initialization version or SQL hash' >&2
-                  exit 1
-                fi
-                echo 'Matching schema already initialized'
-              elif [ "$tables" = 0 ]; then
-                echo 'Initializing empty database'
-                psql -X -v ON_ERROR_STOP=1 --single-transaction -f /sql/Init.sql -c "INSERT INTO schema_initialization(version, sha256) VALUES ('$SCHEMA_VERSION', '$SQL_SHA256')"
-              else
-                echo 'Database contains tables without a matching initialization marker' >&2
-                exit 1
-              fi
+
+              psql -q -X -v ON_ERROR_STOP=1 -v schema_file=Init.sql \
+                -v schema_version="$SCHEMA_VERSION" -v sql_sha256="$SQL_SHA256" -f /sql/InitializeDatabase.sql
+              psql -q -X -v ON_ERROR_STOP=1 \
+                -v identity_database="$IDENTITY_DATABASE" -f /sql/CreateIdentityDatabase.sql
+              PGDATABASE="$IDENTITY_DATABASE" psql -q -X -v ON_ERROR_STOP=1 -v schema_file=InitIdentity.sql \
+                -v schema_version="$IDENTITY_SCHEMA_VERSION" -v sql_sha256="$IDENTITY_SQL_SHA256" -f /sql/InitializeDatabase.sql
+
               psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionApiUser.sql
-              psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionAuthUser.sql
-              echo 'Database initialization and API/authentication roles completed'
+              PGDATABASE="$IDENTITY_DATABASE" psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionAuthUser.sql
+              echo 'Operational and identity database initialization completed'
           env:
             - name: PGHOST
               valueFrom:
@@ -60,7 +52,10 @@ spec:
             - name: PGPORT
               value: "5432"
             - name: PGDATABASE
-              value: mecanica
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: PGDATABASE
             - name: PGUSER
               value: mecanica_admin
             - name: PGPASSWORD
@@ -83,12 +78,30 @@ spec:
             - name: PGSSLROOTCERT
               value: /sql/rds-ca.pem
             - name: SCHEMA_VERSION
-              value: "1.0.0"
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: SCHEMA_VERSION
             - name: SQL_SHA256
               valueFrom:
                 configMapKeyRef:
                   name: database-init-input
                   key: SQL_SHA256
+            - name: IDENTITY_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: IDENTITY_DATABASE
+            - name: IDENTITY_SCHEMA_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: IDENTITY_SCHEMA_VERSION
+            - name: IDENTITY_SQL_SHA256
+              valueFrom:
+                configMapKeyRef:
+                  name: database-init-input
+                  key: IDENTITY_SQL_SHA256
           volumeMounts:
             - name: sql
               mountPath: /sql

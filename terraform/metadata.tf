@@ -9,7 +9,7 @@ locals {
     "api-db-user"       = local.application_users.api
     "auth-secret-arn"   = aws_secretsmanager_secret.application["auth"].arn
     "auth-db-user"      = local.application_users.auth
-    "schema-version"    = "1.0.0"
+    "schema-version"    = local.schema_version
     "sql-sha256"        = local.initialization_sql_sha256
     "ssl-mode"          = "verify-full"
   }

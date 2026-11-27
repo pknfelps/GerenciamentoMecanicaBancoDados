@@ -32,6 +32,8 @@ SELECT format(
 
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM mecanica_api', current_database())
 \gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
 REVOKE ALL PRIVILEGES ON SCHEMA public FROM mecanica_api;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM mecanica_api;
 
@@ -39,7 +41,7 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO mecanica_api', current_database()
 \gexec
 GRANT USAGE ON SCHEMA public TO mecanica_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
-    users, customers, vehicles, orders, order_status_history,
+    customers, vehicles, orders, order_status_history,
     stock, catalog, order_materials, order_services
 TO mecanica_api;
 
