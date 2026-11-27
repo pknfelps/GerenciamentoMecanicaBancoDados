@@ -2,8 +2,6 @@ name: database-provision
 run-name: database-provision / ${{ inputs.environment || (github.ref_name == 'develop' && 'hom' || 'prd') }} / ${{ github.ref_name }}
 
 on:
-  push:
-    branches: [develop, main]
   workflow_dispatch:
     inputs:
       environment:
