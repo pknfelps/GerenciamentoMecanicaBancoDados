@@ -1,7 +1,12 @@
 locals {
-  initialization_sql        = replace(file("${path.module}/../sql/Init.sql"), "\r\n", "\n")
-  initialization_sql_sha256 = sha256(local.initialization_sql)
-  name_prefix               = "mecanica-${var.environment}"
+  initialization_sql                 = replace(file("${path.module}/../sql/Init.sql"), "\r\n", "\n")
+  initialization_sql_sha256          = sha256(local.initialization_sql)
+  schema_version                     = "2.1.0"
+  identity_database_name             = "mecanica_identity"
+  identity_initialization_sql        = replace(file("${path.module}/../sql/InitIdentity.sql"), "\r\n", "\n")
+  identity_initialization_sql_sha256 = sha256(local.identity_initialization_sql)
+  identity_schema_version            = "1.0.0"
+  name_prefix                        = "mecanica-${var.environment}"
   base_fields = toset([
     "vpc-id", "database-subnet-ids", "cluster-name", "init-namespace",
     "api-security-group-id", "auth-security-group-id", "init-security-group-id"

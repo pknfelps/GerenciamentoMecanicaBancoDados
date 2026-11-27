@@ -1,7 +1,5 @@
 -- Run after Init.sql, connected as mecanica_admin to the mecanica database.
--- API_DB_PASSWORD is supplied to psql by the Job; never put it in this file.
-\getenv api_password API_DB_PASSWORD
-SELECT 1 / (length(:'api_password') >= 32)::integer;
+-- The Job supplies identity_database and feeds the password to psql over stdin.
 
 SELECT 'CREATE ROLE mecanica_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mecanica_api')
@@ -24,14 +22,15 @@ BEGIN
     END IF;
 END $$;
 
-SELECT format(
-    'ALTER ROLE mecanica_api WITH LOGIN NOINHERIT PASSWORD %L',
-    :'api_password'
-)
-\gexec
+ALTER ROLE mecanica_api WITH LOGIN NOINHERIT;
+SET LOCAL password_encryption = 'scram-sha-256';
+\password mecanica_api
 
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM mecanica_api', current_database())
 \gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
+REVOKE ALL PRIVILEGES ON DATABASE :"identity_database" FROM mecanica_api;
 REVOKE ALL PRIVILEGES ON SCHEMA public FROM mecanica_api;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM mecanica_api;
 
@@ -39,7 +38,7 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO mecanica_api', current_database()
 \gexec
 GRANT USAGE ON SCHEMA public TO mecanica_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
-    users, customers, vehicles, orders, order_status_history,
+    customers, customer_access_sync, vehicles, orders, order_status_history,
     stock, catalog, order_materials, order_services
 TO mecanica_api;
 

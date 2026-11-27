@@ -1,28 +1,20 @@
-# Esquema SQL 1.0.0 — Fase 3
+# Esquemas PostgreSQL
 
-Fonte: `sql/Init.sql`. Criação completa em banco vazio, com seeds; não é migração,
-não apaga dados existentes e não deve ser reaplicada em cada deploy/startup.
-Executar com `psql -X --set=ON_ERROR_STOP=on --single-transaction --file=sql/Init.sql`.
-A versão está definida no cabeçalho do SQL; SSM v2 publica configuração esperada, sem release de prontidão.
-O hash do esquema continua sendo SHA-256 dos bytes de `sql/Init.sql`.
-
-O Job EKS usa `schema_initialization` como registro operacional: grava
-`1.0.0`, SHA-256 e horário no mesmo commit do esquema/seeds. Essa tabela
-não pertence ao domínio da API e não deve ser escrita pela aplicação. O
-`Init.sql` executado manualmente apenas cria a tabela; o registro é gravado
-pelo Job. Em uma ativação repetida, o Job exige exatamente um registro com
-versão e hash atuais antes de provisionar os usuários/grants. Não há SQLs de smoke na operação declarativa.
+A mesma instância RDS contém dois databases. O Job aplica [Init.sql](../sql/Init.sql) 2.1.0 a mecanica e [InitIdentity.sql](../sql/InitIdentity.sql) 1.0.0 a mecanica_identity, cada um em uma transação com seeds e o próprio schema_initialization. O marcador contém versão, SHA-256 e horário. A reexecução verifica os dois marcadores antes de provisionar os grants. Os workflows consumidores comparam initialization-target e initialized no SSM. Para executar um SQL localmente, usar psql -X --set=ON_ERROR_STOP=on --single-transaction --file apontado ao database vazio correspondente.
 
 ## Contrato de persistência
 
-- `users.role`: `Admin` ou `Mechanic`. UUIDs identificam os usuários. Seeds
+- Em mecanica_identity, `users.role`: `Admin` ou `Mechanic`. UUIDs identificam os usuários. Seeds
   educacionais: `Admin` / `Admin@123` e `Mechanic` / `Mechanic@123`, com hashes
   PBKDF2-SHA256, 100.000 iterações, salt de 16 bytes e hash de 32 bytes.
 - `customers.status`: `Active` (Ativo) ou `Inactive` (Inativo), obrigatório,
   padrão `Active`. A API deve sempre criar clientes ativos e não expor edição
-  desse campo no PATCH genérico. A Lambda consulta esse valor junto do UUID
-  e documento. Documento permanece canônico, mascarado e UNIQUE, aceitando
-  CPF/CNPJ conforme validação do domínio.
+  desse campo no PATCH genérico. O documento canônico e mascarado é UNIQUE e
+  aceita CPF/CNPJ conforme validação do domínio. `customer_access_sync` mantém
+  UUID, revisão, operação e pendência da sincronização com a AuthFunction.
+- Em mecanica_identity, `customer_access` guarda UUID, nome, documento, e-mail,
+  situação e revisão. Uma revogação mantém apenas UUID, revisão e situação.
+  A AuthFunction consulta a cópia local para autenticação por código.
 - `orders.status` mantém o estado atual. `date_created`, `date_finished` e
   `duration` foram removidos; datas e durações devem ser projetadas pelo histórico.
 - `order_status_history`: `id` UUID do evento, `order_id` UUID estável da OS,
@@ -86,31 +78,22 @@ projeções pelo histórico estão implementados. A consolidação E4 protege a 
 e decisão por bloqueio transacional da OS/material, torna todo DELETE atômico e
 representa conclusão/duração ausentes com null. Não modifica este esquema ou seeds.
 A inspeção SQL direta de histórico e cliente Inativo foi concluída em hom. Em
-02/11/2026, os fluxos HTTP de autenticação e OS foram conferidos em hom e prd,
+02/11/2026, na revisão anterior à separação dos databases, os fluxos HTTP de autenticação e OS foram conferidos em hom e prd,
 com as duas instâncias RDS disponíveis, privadas e criptografadas. SQL direto,
 retenção após DELETE e descarte não foram repetidos em prd. A conferência é
 pontual e não garante disponibilidade futura ou recuperação dos dados.
 
-A validacao operacional agora usa ferramentas padrao e o Job: conferir marcador
-1.0.0/hash/data, mensagem de inicializacao ou repeticao e resultado Complete.
-SQLs de smoke e scripts de teste foram removidos conforme ADR 008. As evidencias
-Novas execuções continuam exigindo planos aprovados e pipelines.
-
-O conteudo entregue ao ConfigMap usa LF, como o arquivo versionado no Git;
-Terraform calcula SHA-256 desse mesmo conteudo. Isso preserva o marcador entre
-checkouts Windows/Linux, sem criar diferenças artificiais de hash entre plataformas. O hash esperado é calculado a partir do Init.sql completo, incluindo as duas tabelas de autenticação.
+Conferir os dois marcadores e o resultado Complete do Job em novas execuções. O ConfigMap preserva LF e o workflow confirma os hashes dos dois arquivos versionados. O ambiente é reconstruído a partir dos seeds, com planos aprovados e as pipelines de cada repositório.
 
 ## Modelo físico e limites
 
-O Init.sql possui doze tabelas: users, customers, vehicles, orders, order_status_history, stock, catalog, order_materials, order_services, schema_initialization, customer_auth_challenges e customer_auth_request_limits. [ER completo](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/diagramas/DADOS.md) e [justificativa PostgreSQL/RDS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/BANCO_E_MODELO.md).
+mecanica tem customers, customer_access_sync, vehicles, orders, order_status_history, stock, catalog, order_materials, order_services e schema_initialization. mecanica_identity tem users, customer_access, customer_auth_challenges, customer_auth_request_limits e schema_initialization. [Diagramas físicos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/diagramas/DADOS.md).
 
 Clientes/veículos se relacionam pelas chaves naturais document/vehicle_license_plate. Itens de OS guardam snapshots dos dados de material/serviço; seus ids são FKs para stock/catalog, sem PK ou unicidade composta declarada. O histórico tem PK própria, sem FK para orders. schema_initialization não tem PK e não recebe grants de API/auth. Não há exclusão em cascata declarada, CHECK de estados ou UNIQUE por sequência do histórico. Não atribuir ao banco garantias implementadas apenas na aplicação.
 
-A autenticação tem SELECT restrito às colunas id/name/document/status/email de customers e DML somente nas duas tabelas customer_auth_challenges/customer_auth_request_limits. O usuário da API possui DML nas nove tabelas de domínio; não administra o marcador. A execução do Job e a conferência de grants preservam essa separação.
+A credencial mecanica_api possui DML nas nove tabelas operacionais. mecanica_auth possui DML nas quatro tabelas de identidade. O Job concede conexão somente ao database correspondente e conserva schema_initialization sob seu controle.
 
-## Desafios e limites no Init.sql
-
-As duas tabelas fazem parte da criação completa do banco vazio. Não há migrations, SQL adicional ou integração incremental pendente. Terraform entrega o Init.sql ao ConfigMap e calcula seu SHA-256; o Job existente cria as doze tabelas/seeds e grava o novo hash no marcador. Reexecução com marcador idêntico continua preservando os dados. Banco de outra revisão/hash é recusado; o projeto usa destroy e nova inicialização, sem adaptação automática.
+## Desafios e limites em mecanica_identity
 
 customer_auth_challenges guarda UUID próprio e do cliente, salt/verificador binários, instantes, estado e tentativas. customer_auth_request_limits usa customer_id como PK e guarda janela, quantidade e última solicitação. Chaves primárias, tipos, nulabilidade/defaults e três índices comuns; sem CHECKs, UNIQUE condicionado ao estado, FK de cliente ou cascata. Toda regra de estado, validade, tamanho criptográfico, tentativas, substituição e consumo pertence ao C# da autenticação, que já usa transações/locks/operações condicionais no código da autenticação.
 

@@ -50,6 +50,13 @@ jobs:
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+      - name: Check database configuration
+        run: |
+          terraform fmt -check -recursive
+          kubectl kustomize ../k8s > /dev/null
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-region: us-east-1
@@ -134,3 +141,11 @@ jobs:
       - name: Remove temporary credentials
         if: always()
         run: kubectl -n database-init delete secret database-init-admin database-init-api database-init-auth --ignore-not-found=true
+      - name: Confirm both databases are initialized
+        run: |
+          set -euo pipefail
+          prefix="/mecanica/$TARGET_ENVIRONMENT/database/v2"
+          target="$(aws ssm get-parameter --name "$prefix/initialization-target" --query 'Parameter.Value' --output text)"
+          receipt="$(jq -cer --arg commit "$GITHUB_SHA" '. + {commit: $commit}' <<< "$target")"
+          aws ssm put-parameter --name "$prefix/initialized" --type String --overwrite --value "$receipt" > /dev/null
+          printf '\nDatabases initialized for commit `%s`.\n\n`%s`\n' "$GITHUB_SHA" "$receipt" >> "$GITHUB_STEP_SUMMARY"
