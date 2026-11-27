@@ -33,6 +33,11 @@ spec:
             - |
               trap 'unset PGPASSWORD API_DB_PASSWORD AUTH_DB_PASSWORD' EXIT
 
+              if [ "${#API_DB_PASSWORD}" -lt 32 ] || [ "${#AUTH_DB_PASSWORD}" -lt 32 ]; then
+                echo 'Database role passwords must contain at least 32 characters' >&2
+                exit 1
+              fi
+
               psql -q -X -v ON_ERROR_STOP=1 -v schema_file=Init.sql \
                 -v schema_version="$SCHEMA_VERSION" -v sql_sha256="$SQL_SHA256" -f /sql/InitializeDatabase.sql
               psql -q -X -v ON_ERROR_STOP=1 \
@@ -40,8 +45,13 @@ spec:
               PGDATABASE="$IDENTITY_DATABASE" psql -q -X -v ON_ERROR_STOP=1 -v schema_file=InitIdentity.sql \
                 -v schema_version="$IDENTITY_SCHEMA_VERSION" -v sql_sha256="$IDENTITY_SQL_SHA256" -f /sql/InitializeDatabase.sql
 
-              psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionApiUser.sql
-              PGDATABASE="$IDENTITY_DATABASE" psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction -f /sql/ProvisionAuthUser.sql
+              # psql's \password derives a SCRAM verifier before sending SQL to PostgreSQL.
+              printf '%s\n' "$API_DB_PASSWORD" "$API_DB_PASSWORD" |
+                psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never --single-transaction \
+                  -v identity_database="$IDENTITY_DATABASE" -f /sql/ProvisionApiUser.sql
+              printf '%s\n' "$AUTH_DB_PASSWORD" "$AUTH_DB_PASSWORD" |
+                PGDATABASE="$IDENTITY_DATABASE" psql -q -X -v ON_ERROR_STOP=1 -v VERBOSITY=terse -v SHOW_CONTEXT=never \
+                  --single-transaction -v operational_database="$PGDATABASE" -f /sql/ProvisionAuthUser.sql
               echo 'Operational and identity database initialization completed'
           env:
             - name: PGHOST

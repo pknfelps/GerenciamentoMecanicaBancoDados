@@ -26,7 +26,7 @@ resource "aws_secretsmanager_secret_version" "application" {
     engine   = "postgres"
     host     = aws_db_instance.database.address
     port     = aws_db_instance.database.port
-    dbname   = aws_db_instance.database.db_name
+    dbname   = each.key == "auth" ? local.identity_database_name : aws_db_instance.database.db_name
     username = each.value
     password = ephemeral.random_password.application[each.key].result
   })
